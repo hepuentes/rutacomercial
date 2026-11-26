@@ -8,6 +8,12 @@ Owner y Repartidor usan el mismo proyecto de Firebase, con autenticación anóni
 2. En las asignaciones de Owner, elegí la zona, escribí el nombre del repartidor y pegá ese código. Tocá **Asignar en línea**. El código queda asociado al nombre en ese teléfono.
 3. En Repartidor, abrí la tarea recibida y confirmá el primer vínculo con el QR o PIN del Owner. Las tareas posteriores del mismo Owner se pueden aceptar directamente.
 
+En Repartidor, **Enviar al Owner** muestra el código y abre el menú para mandarlo por WhatsApp. En Owner se puede pegar el mensaje completo: la app extrae el código.
+
+## Propuestas de zona
+
+Cuando el Repartidor ya aceptó al menos una tarea en línea, **Proponer zona → Enviar al Owner** sube la propuesta a Firestore (`proposals/{id}`), sin archivos. En Owner aparece en **Asignaciones → Propuestas de zona por revisar**. **Aceptar y enviar tarea** guarda la zona y devuelve la tarea en línea al mismo teléfono. Si el Repartidor todavía no está vinculado, la propuesta se comparte como archivo, igual que antes.
+
 Una tarea que ya existe en Owner se puede enviar desde su detalle. Si se envió a un teléfono y después se cambia de repartidor, creá otra asignación para conservar la trazabilidad.
 
 El seguimiento se registra en la base local. Durante una jornada activa se intenta publicar el avance aproximadamente cada minuto. Al pausar o terminar se programa una entrega que puede ejecutarse cuando Android vuelva a disponer de conexión. Owner incorpora el informe a las mismas vistas de mapa e historial que usa la importación por archivo. Cada jornada tiene un identificador estable para reemplazar el avance al llegar el cierre.

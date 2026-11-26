@@ -20,6 +20,7 @@ import kotlin.coroutines.resumeWithException
 internal object GuideStreets {
     private const val maxBytes=6_000_000L
     private val client=OkHttpClient.Builder().callTimeout(30,TimeUnit.SECONDS).build()
+    private val mirrors=listOf("https://maps.mail.ru/osm/tools/overpass/api/interpreter","https://overpass-api.de/api/interpreter")
     private val pedestrianAccess=setOf("yes","designated","permissive","official")
     private val excludedAccess=setOf("no","private","customers","delivery","permit","agricultural","forestry","use_sidepath")
     private fun parse(body:String):List<GuideStreet> {
@@ -65,8 +66,14 @@ internal object GuideStreets {
         val types="residential|living_street|unclassified|tertiary|secondary|primary|pedestrian|footway"
         val query="""[out:json][timeout:20];way["highway"~"^($types)$"]["footway"!~"^(sidewalk|crossing)$"]($bounds);out body geom;"""
         try {
-            val url="https://maps.mail.ru/osm/tools/overpass/api/interpreter".toHttpUrl().newBuilder().addQueryParameter("data",query).build()
-            val body=download(Request.Builder().url(url).header("User-Agent","RutaComercial-Android/0.15").header("Accept","application/json").build())
+            // Public Overpass mirrors fail often; try the next one before giving up.
+            var failure:IOException?=null
+            val body=mirrors.firstNotNullOfOrNull { mirror ->
+                try {
+                    val url=mirror.toHttpUrl().newBuilder().addQueryParameter("data",query).build()
+                    download(Request.Builder().url(url).header("User-Agent","RutaComercial-Android/0.18").header("Accept","application/json").build())
+                } catch(e:IOException) { failure=e;null }
+            } ?: throw failure ?: IOException("Servicio de calles temporalmente no disponible.")
             val streets=parse(body)
             val temp=File.createTempFile("streets-",null,dir)
             try {

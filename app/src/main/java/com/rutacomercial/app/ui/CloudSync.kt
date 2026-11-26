@@ -22,6 +22,10 @@ import java.util.zip.GZIPInputStream
 import java.util.zip.GZIPOutputStream
 import java.security.MessageDigest
 
+/** Accepts the bare code or the whole message the worker shares ("Mi código …: CODE"). */
+internal fun deviceCode(text: String): String =
+    Regex("[A-Za-z0-9_-]{20,128}").findAll(text).lastOrNull()?.value ?: text.trim().take(128)
+
 internal class CloudSync(private val app: RutaApplication) {
     private val folder = File(app.filesDir, "assignments")
     private val prefs = app.getSharedPreferences("online", Context.MODE_PRIVATE)
@@ -46,6 +50,7 @@ internal class CloudSync(private val app: RutaApplication) {
             val worker = BuildConfig.WORKER_EDITION
             status.value = "Conectado"
             launch { outgoingLoop(uid, worker) }
+            if (!worker) launch { retry { listen(db.collection("proposals").whereEqualTo("owner", uid)) { receiveProposal(it) } } }
             val field = if (worker) "worker" else "owner"
             retry {
                 listen(db.collection("tasks").whereEqualTo(field, uid)) { doc ->
@@ -88,7 +93,8 @@ internal class CloudSync(private val app: RutaApplication) {
     fun recipient(name: String): String = prefs.getString("person:"+name.trim().lowercase(), "").orEmpty()
 
     fun assign(task: JSONObject, recipient: String) {
-        require(recipient.matches(Regex("[A-Za-z0-9_-]{20,128}")) && recipient != device.value) { "Revisá el código del teléfono." }
+        require(recipient.matches(Regex("[A-Za-z0-9_-]{20,128}"))) { "Revisá el código del teléfono." }
+        require(recipient != device.value) { "Ese es el código de este teléfono. Pegá el del repartidor." }
         val id = task.getString("id")
         val assigned = prefs.getString("target:"+id,null)
         require(assigned==null || assigned==recipient) { "Para cambiar de teléfono, creá otra asignación." }
@@ -98,9 +104,27 @@ internal class CloudSync(private val app: RutaApplication) {
         scheduleDelivery()
     }
 
+    /** The worker learns the Owner's account from the first verified online task. */
+    fun canPropose() = enabled && prefs.contains("ownerUid")
+
+    fun propose(proposal: JSONObject) {
+        require(canPropose() && validProposal(proposal))
+        save(local(proposal.getString("id"),"outgoing"), proposal)
+        check(prefs.edit().putBoolean("propose:"+proposal.getString("id"), true).commit())
+        scheduleDelivery()
+        status.value = "Propuesta pendiente de enviar"
+    }
+
+    /** Worker account that sent a proposal online, so the accepted task returns to that phone. */
+    fun proposer(proposalId: String): String? = prefs.getString("proposer:"+proposalId, null)
+
     fun onlineTask(id: String) = prefs.contains("linked:"+id)
     fun pending(): List<String> = prefs.all.keys.filter { it.startsWith("pending:") }.map { it.substringAfter(':') }
-    fun accepted(id: String) { prefs.edit().remove("pending:"+id).apply(); revision.update { it+1 } }
+    fun accepted(id: String) {
+        val edit = prefs.edit().remove("pending:"+id)
+        prefs.getString("taskOwner:"+id, null)?.let { edit.putString("ownerUid", it) }
+        edit.apply(); revision.update { it+1 }
+    }
 
     private suspend fun outgoingLoop(uid: String, worker: Boolean) {
         var seen = wake.value
@@ -132,7 +156,17 @@ internal class CloudSync(private val app: RutaApplication) {
                 prefs.edit().remove(key).apply()
                 status.value = "Tarea sincronizada"
             }
-        } else if (prefs.all.keys.any { it.startsWith("linked:") }) {
+        } else {
+            val owner = prefs.getString("ownerUid", null)
+            for (key in prefs.all.keys.filter { it.startsWith("propose:") }) {
+                if (owner == null) break
+                val id = key.substringAfter(':')
+                publish(db.collection("proposals").document(id), JSONObject(local(id,"outgoing").readText()), mapOf("owner" to owner, "worker" to uid))
+                prefs.edit().remove(key).apply()
+                status.value = "Propuesta enviada al Owner"
+            }
+        }
+        if (worker && prefs.all.keys.any { it.startsWith("linked:") }) {
                 val data = app.repository.snapshot()
                 for ((id,events) in data.audit.filter { it.action=="ASSIGNMENT" && onlineTask(it.detail) }.groupBy { it.detail }) {
                     val sessions = events.map { it.entityId }
@@ -165,6 +199,8 @@ internal class CloudSync(private val app: RutaApplication) {
         val job = android.app.job.JobInfo.Builder(18025, android.content.ComponentName(app, CloudDeliveryJob::class.java))
             .setRequiredNetworkType(android.app.job.JobInfo.NETWORK_TYPE_ANY).setPersisted(true).build()
         scheduler.schedule(job)
+        // Shown until the server confirms, so an offline phone never reads as synced.
+        if (BuildConfig.WORKER_EDITION && prefs.all.keys.any { it.startsWith("linked:") }) status.value = "Recorrido guardado · pendiente de enviar"
         wake.update { it+1 }
     }
 
@@ -181,13 +217,15 @@ internal class CloudSync(private val app: RutaApplication) {
 
     private suspend fun receiveTask(doc: DocumentSnapshot) {
         val existing = local(doc.id,"task")
-        if (existing.exists() && onlineTask(doc.id)) return
+        val ownerUid = requireNotNull(doc.getString("owner"))
+        if (existing.exists() && onlineTask(doc.id)) { prefs.edit().putString("ownerUid", ownerUid).apply(); return }
         val task = unpack(doc)
         require(task.getString("id")==doc.id && OwnerIdentity.verified(task))
         val owner = assignmentPrefs.getString(OwnerIdentity.binding,null)
         if (owner!=null && owner!=task.getString("ownerKey")) return
         if (existing.exists() && JSONObject(existing.readText()).optString("signature")!=task.getString("signature")) return
-        val edit = prefs.edit().putBoolean("linked:"+doc.id,true)
+        val edit = prefs.edit().putBoolean("linked:"+doc.id,true).putString("taskOwner:"+doc.id, ownerUid)
+        if (owner==task.getString("ownerKey")) edit.putString("ownerUid", ownerUid)
         if (!existing.exists()) {
             save(local(doc.id,"received"),task)
             edit.putBoolean("pending:"+doc.id,true)
@@ -207,6 +245,16 @@ internal class CloudSync(private val app: RutaApplication) {
         require(old==null || old.optString("assignmentId",doc.id)==taskId)
         if (newerReport(old,report)===report && old?.toString()!=report.toString()) save(file,report)
         status.value = "Último avance recibido"
+    }
+
+    private suspend fun receiveProposal(doc: DocumentSnapshot) {
+        val file = local(doc.id,"proposal")
+        if (file.exists()) return
+        val proposal = unpack(doc)
+        require(proposal.getString("id")==doc.id && validProposal(proposal))
+        check(prefs.edit().putString("proposer:"+doc.id, requireNotNull(doc.getString("worker"))).commit())
+        save(file, proposal)
+        status.value = "Propuesta recibida · "+proposal.getString("name")
     }
 
     private fun digest(bytes: ByteArray) = android.util.Base64.encodeToString(MessageDigest.getInstance("SHA-256").digest(bytes),android.util.Base64.NO_WRAP)
