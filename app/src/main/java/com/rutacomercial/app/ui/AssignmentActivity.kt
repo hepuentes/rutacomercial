@@ -12,6 +12,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -293,16 +294,15 @@ class AssignmentActivity : TrackingMapActivity() {
             if(cloud.enabled && incoming==null && worker && !workerMap && cloud.canPropose())
                 Text("✓ Vinculado con tu Owner · "+onlineStatus,style=MaterialTheme.typography.labelMedium)
             else if(cloud.enabled && incoming==null && worker && !workerMap) {
-                Text("Primer paso: mandale tu código a tu Owner. Lo hacés una sola vez.",style=MaterialTheme.typography.titleSmall)
+                WorkerLinkCard(deviceId,onLink={ invite,name ->
+                    runCatching { cloud.link(invite,name) }
+                        .onSuccess { msg="✓ Vinculado. Las tareas de tu Owner van a aparecer acá." }
+                        .onFailure { msg=it.localizedMessage ?: "No se pudo vincular." }
+                },onShareCode={
+                    startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain")
+                        .putExtra(Intent.EXTRA_TEXT,"Mi código de RutaComercial Repartidor: "+deviceId),"Enviar mi código al Owner"))
+                })
                 Text(onlineStatus,style=MaterialTheme.typography.labelMedium)
-                if(deviceId.isNotBlank()) Text("Mi código: "+deviceId,style=MaterialTheme.typography.bodySmall)
-                Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                    FilledTonalButton(enabled=deviceId.isNotBlank(),onClick={copyDeviceCode()}) { Text("Copiar código") }
-                    Button(enabled=deviceId.isNotBlank(),onClick={
-                        startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain")
-                            .putExtra(Intent.EXTRA_TEXT,"Mi código de RutaComercial Repartidor: "+deviceId),"Enviar mi código al Owner"))
-                    }) { Text("Enviar al Owner") }
-                }
             }
             if(worker && busyJourney==null && incoming==null) pendingOnline.forEach { key ->
                 val doc=remember(key,onlineRevision) { read(key,"received") }
@@ -675,10 +675,24 @@ class AssignmentActivity : TrackingMapActivity() {
                     }
                 }
             }
+            if(!worker && id==null && cloud.enabled) {
+                var showLinkQr by remember { mutableStateOf(false) }
+                val linked=remember(revision,onlineRevision) { cloud.linkedWorkers() }
+                if(linked.isNotEmpty()) {
+                    Text("Repartidores vinculados",style=MaterialTheme.typography.titleSmall)
+                    Row(Modifier.horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(6.dp)) {
+                        linked.forEach { (name,_) -> FilterChip(selected=person.trim().equals(name,true),onClick={person=name},label={Text(name)}) }
+                    }
+                }
+                OutlinedButton(enabled=deviceId.isNotBlank(),onClick={showLinkQr=true}) { Text("Vincular repartidor con QR") }
+                if(showLinkQr) OwnerLinkQrDialog(deviceId) { showLinkQr=false }
+            }
             if(!worker && id==null) {
                 Choice("Zona guardada",sector,data.sectors.map { it.id to it.name }) { sector=it }
                 Field("Nombre del repartidor",person,{person=it.take(100)})
-                if(cloud.enabled) Field("Código del teléfono para envío en línea",recipient,{recipient=deviceCode(it)})
+                val linkedPhone=remember(recipient,onlineRevision) { cloud.linkedWorkers().any { it.second==recipient } }
+                if(cloud.enabled && linkedPhone) Text("✓ Teléfono vinculado · la tarea le llega en línea",style=MaterialTheme.typography.bodySmall)
+                else if(cloud.enabled) Field("Código del teléfono (si no está vinculado)",recipient,{recipient=deviceCode(it)})
                 Field("Indicación opcional",note,{note=it.take(500)})
                 val selected=data.sectors.find { it.id==sector }
                 if(selected!=null && (previousJourneys(data,selected.id).isNotEmpty() || work.reportsFor(work.tasksFor(selected,data.sectors)).isNotEmpty()))

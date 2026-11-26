@@ -51,6 +51,7 @@ internal class CloudSync(private val app: RutaApplication) {
             status.value = "Conectado"
             launch { outgoingLoop(uid, worker) }
             if (!worker) launch { retry { listen(db.collection("proposals").whereEqualTo("owner", uid)) { receiveProposal(it) } } }
+            if (!worker) launch { retry { listen(db.collection("links").whereEqualTo("owner", uid)) { receiveLink(it) } } }
             val field = if (worker) "worker" else "owner"
             retry {
                 listen(db.collection("tasks").whereEqualTo(field, uid)) { doc ->
@@ -115,6 +116,20 @@ internal class CloudSync(private val app: RutaApplication) {
         status.value = "Propuesta pendiente de enviar"
     }
 
+    /** Worker: trust the scanned Owner and tell it this phone's code and name. */
+    fun link(invite: LinkInvite, name: String) {
+        require(enabled && name.isNotBlank() && name.length <= 100)
+        require(invite.owner != device.value) { "Ese QR es de este mismo teléfono." }
+        OwnerIdentity.bind(assignmentPrefs, invite.key)
+        check(prefs.edit().putString("ownerUid", invite.owner).putString("linkName", name).putBoolean("linkPending", true).commit())
+        scheduleDelivery()
+        status.value = "Vinculando con tu Owner…"
+    }
+
+    /** Owner: phones that linked by QR, as name to code. */
+    fun linkedWorkers(): List<Pair<String, String>> =
+        prefs.all.filterKeys { it.startsWith("worker:") }.map { (k, v) -> v.toString() to k.substringAfter(':') }.sortedBy { it.first.lowercase() }
+
     /** Worker account that sent a proposal online, so the accepted task returns to that phone. */
     fun proposer(proposalId: String): String? = prefs.getString("proposer:"+proposalId, null)
 
@@ -161,6 +176,12 @@ internal class CloudSync(private val app: RutaApplication) {
             }
         } else {
             val owner = prefs.getString("ownerUid", null)
+            if (owner != null && prefs.getBoolean("linkPending", false)) {
+                db.collection("links").document(uid).set(mapOf("owner" to owner, "worker" to uid,
+                    "name" to prefs.getString("linkName", "").orEmpty(), "at" to FieldValue.serverTimestamp())).await()
+                prefs.edit().remove("linkPending").apply()
+                status.value = "✓ Vinculado con tu Owner"
+            }
             for (key in prefs.all.keys.filter { it.startsWith("propose:") }) {
                 if (owner == null) break
                 val id = key.substringAfter(':')
@@ -248,6 +269,16 @@ internal class CloudSync(private val app: RutaApplication) {
         require(old==null || old.optString("assignmentId",doc.id)==taskId)
         if (newerReport(old,report)===report && old?.toString()!=report.toString()) save(file,report)
         status.value = "Último avance recibido"
+    }
+
+    private fun receiveLink(doc: DocumentSnapshot) {
+        val name = requireNotNull(doc.getString("name")).trim()
+        val worker = requireNotNull(doc.getString("worker"))
+        require(name.length in 1..100 && worker == doc.id && worker.matches(Regex("[A-Za-z0-9_-]{20,128}")))
+        if (prefs.getString("worker:$worker", null) == name) return
+        check(prefs.edit().putString("worker:$worker", name).putString("person:"+name.lowercase(), worker).commit())
+        revision.update { it+1 }
+        status.value = "Repartidor vinculado · $name"
     }
 
     private suspend fun receiveProposal(doc: DocumentSnapshot) {

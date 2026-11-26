@@ -5,6 +5,17 @@ service cloud.firestore {
       // Equalities joined by || let Firestore prove that queries filtered by owner or worker are allowed.
       return request.auth != null && (request.auth.uid == task.owner || request.auth.uid == task.worker);
     }
+    // A worker scans the Owner's QR and publishes its own code and name under its uid.
+    match /links/{workerId} {
+      allow read: if member(resource.data);
+      allow create, update: if request.auth != null && workerId == request.auth.uid
+        && request.resource.data.keys().hasOnly(['owner', 'worker', 'name', 'at'])
+        && request.resource.data.worker == request.auth.uid
+        && request.resource.data.owner is string && request.resource.data.owner != request.auth.uid
+        && request.resource.data.owner.size() <= 128
+        && request.resource.data.name is string && request.resource.data.name.size() >= 1
+        && request.resource.data.name.size() <= 100;
+    }
     // A worker sends a zone proposal to the Owner account it learned from a verified task.
     match /proposals/{proposalId} {
       allow read: if member(resource.data);
