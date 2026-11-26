@@ -1,0 +1,17 @@
+.gradle/
+.tools/
+.android/
+local.properties
+**/build/
+*.jks
+*.keystore
+!gradle/wrapper/gradle-wrapper.jar
+
+# Instaladores, evidencias locales y archivos de trabajo compartidos
+dist/
+docs/evidencias/
+docs/capturas/
+*.ruta
+*.ruta.json
+*.rcb
+.env
