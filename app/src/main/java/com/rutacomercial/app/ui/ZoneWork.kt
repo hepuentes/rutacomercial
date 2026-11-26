@@ -175,7 +175,8 @@ internal fun newerReport(saved: JSONObject?, incoming: JSONObject): JSONObject {
 internal fun zoneWork(revision: Int = 0): ZoneWork {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
-    val work by produceState(ZoneWork(), lifecycle, revision) {
+    val onlineRevision by (context.applicationContext as com.rutacomercial.app.RutaApplication).cloud.revision.collectAsState()
+    val work by produceState(ZoneWork(), lifecycle, revision, onlineRevision) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             value = withContext(Dispatchers.IO) { ZoneWork.read(File(context.filesDir, "assignments")) }
         }

@@ -1,0 +1,28 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function member(task) {
+      return request.auth != null && request.auth.uid in [task.owner, task.worker];
+    }
+    match /tasks/{taskId} {
+      allow read: if member(resource.data);
+      allow create: if request.auth != null && request.resource.data.owner == request.auth.uid
+        && request.resource.data.worker is string && request.resource.data.worker != request.auth.uid
+        && request.resource.data.worker.size() <= 128;
+      allow update: if request.auth.uid == resource.data.owner && request.resource.data == resource.data;
+      match /parts/{part} {
+        allow read: if member(get(/databases/$(database)/documents/tasks/$(taskId)).data);
+        allow write: if request.auth.uid == getAfter(/databases/$(database)/documents/tasks/$(taskId)).data.owner;
+      }
+      match /reports/{reportId} {
+        function task() { return get(/databases/$(database)/documents/tasks/$(taskId)).data; }
+        allow read: if member(task());
+        allow create, update: if request.auth.uid == task().worker;
+        match /parts/{part} {
+          allow read: if member(task());
+          allow create, update: if request.auth.uid == task().worker;
+        }
+      }
+    }
+  }
+}

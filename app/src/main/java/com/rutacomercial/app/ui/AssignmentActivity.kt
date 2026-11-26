@@ -112,6 +112,11 @@ class AssignmentActivity : TrackingMapActivity() {
         var loading by remember { mutableStateOf(intent.data!=null || intent.action==Intent.ACTION_SEND) }
         var drawingProposal by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
         var incoming by remember { mutableStateOf<JSONObject?>(null) }
+        val cloud = (application as RutaApplication).cloud
+        val onlineRevision by cloud.revision.collectAsStateWithLifecycle()
+        val onlineStatus by cloud.status.collectAsStateWithLifecycle()
+        val deviceId by cloud.device.collectAsStateWithLifecycle()
+        val pendingOnline = remember(onlineRevision) { cloud.pending() }
         val zone=remember(id,revision) { id?.let { read(it,"task") } }
         val work=zoneWork(revision)
         val taskReports=remember(work,id) { work.reports.filter { it.taskId==id } }
@@ -243,6 +248,11 @@ class AssignmentActivity : TrackingMapActivity() {
         var qrTask by remember { mutableStateOf<JSONObject?>(null) }
         qrTask?.let { task -> OwnerPairingCard(task) { qrTask=null } }
         var person by remember { mutableStateOf("") }; var note by remember { mutableStateOf("") }
+        var recipient by remember(person) { mutableStateOf(cloud.recipient(person)) }
+        fun copyDeviceCode() {
+            getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Teléfono repartidor",deviceId))
+            msg = "Código copiado. Enviáselo al Owner una sola vez."
+        }
         var sector by remember { mutableStateOf(intent.getStringExtra("sector")) }
         val workerMap = worker && zone!=null && incoming==null
         var options by remember(id) { mutableStateOf(false) }
@@ -280,6 +290,14 @@ class AssignmentActivity : TrackingMapActivity() {
                 large=incoming!=null || worker && zone==null
             )
             if(msg.isNotBlank()) Text(msg)
+            if(cloud.enabled && incoming==null && worker && !workerMap) {
+                Text(onlineStatus,style=MaterialTheme.typography.labelMedium)
+                FilledTonalButton(enabled=deviceId.isNotBlank(),onClick={copyDeviceCode()}) { Text("Copiar mi código de teléfono") }
+            }
+            if(worker && busyJourney==null && incoming==null) pendingOnline.forEach { key ->
+                val doc=remember(key,onlineRevision) { read(key,"received") }
+                if(doc!=null) Button(onClick={incoming=doc}) { Text("Abrir tarea · "+doc.optString("name")) }
+            }
             incoming?.let { obj ->
                 if(obj.optString("kind")=="proposal" && !worker) {
                     val proposal=obj.getString("id")
@@ -327,7 +345,7 @@ class AssignmentActivity : TrackingMapActivity() {
                     }
                 }
                 var confirmed by remember(obj) { mutableStateOf(false) }
-                val needsPairing=invitation && !(prefs.getString(OwnerIdentity.binding,null)==obj.optString("ownerKey") && read(key,"task")?.optString("signature")==obj.optString("signature"))
+                val needsPairing=invitation && !(prefs.getString(OwnerIdentity.binding,null)==obj.optString("ownerKey") && (cloud.onlineTask(key) || read(key,"task")?.optString("signature")==obj.optString("signature")))
                 if(invitation && (confirmed || !needsPairing)) {
                     val preview=remember(obj) { geometry(obj) }
                     TerritoryMap(Modifier.fillMaxWidth().height(180.dp),sectors=listOf(MapSector(key,obj.getString("name"),"#087F75",preview,true)),fitArea=preview)
@@ -341,7 +359,7 @@ class AssignmentActivity : TrackingMapActivity() {
                             val previous=read(key,"task")
                             require(previous==null || listOf("name","worker","polygon","note").all { previous.optString(it)==obj.optString(it) }) { "La tarea existente tiene otros datos." }
                             OwnerIdentity.accept(prefs,obj,confirmed || !needsPairing)
-                            save(key,"task",obj);historyJourney=null;prefs.edit().putString("selected",key).apply()
+                            save(key,"task",obj);cloud.accepted(key);historyJourney=null;prefs.edit().putString("selected",key).apply()
                         } else {
                             require(!worker)
                             for(entry in validateBundle(obj)) {
@@ -534,34 +552,15 @@ class AssignmentActivity : TrackingMapActivity() {
                         }
                     }
                     tracking.locationProblem?.let { Text(it,style=MaterialTheme.typography.bodySmall) }
-                    fun sessionReport(journey:Journey):JSONObject {
-                            val segments=JSONArray()
-                            mapTracks(data,journey.id).forEach { t->segments.put(JSONArray().apply { t.points.forEach { put(JSONArray().put(it.latitude).put(it.longitude)) } }) }
-                            val speeds=JSONArray()
-                            data.points.filter { it.journeyId==journey.id }.groupBy { it.segment }.toSortedMap().values.forEach { group ->
-                                val ordered=group.sortedBy { it.elapsedRealtimeNanos }
-                                val seconds=(ordered.last().elapsedRealtimeNanos-ordered.first().elapsedRealtimeNanos)/1e9
-                                if(seconds>0) speeds.put(JSONObject().put("from",ordered.first().at).put("to",ordered.last().at)
-                                    .put("kmh",ordered.drop(1).sumOf { it.distanceDeltaM }*3.6/seconds))
-                            }
-                            val observations=JSONArray()
-                            data.incidents.filter { it.journeyId==journey.id && it.kind in setOf("FAST_INTERVAL","WALK_STOP","GPS","GPS_DISABLED","LOCATION_UNAVAILABLE") }.forEach {
-                                observations.put(JSONObject().put("kind",it.kind).put("at",it.at))
-                            }
-                            val reportKey=if(journey.id==sessions.firstOrNull()) id else journey.id
-                            return JSONObject().put("assignmentId",id).put("state",journey.state)
-                                .put("capturedAt",System.currentTimeMillis()).put("startedAt",journey.startedAt).put("worker",zone.optString("worker")).put("name",zone.optString("name"))
-                                .put("speedSegments",speeds).put("observations",observations).put("version",1).put("kind","result").put("id",reportKey).put("meters",journey.distanceM).put("duration",journey.activeDuration(System.currentTimeMillis())).put("segments",segments).put("events",encodedMarks(journeyMarks(data,journey.id)))
-                    }
                     fun sendReport(journey:Journey) {
                         runCatching {
-                            val doc=sessionReport(journey)
+                            val doc=sessionReport(data,journey,sessions,zone)
                             val prior=JSONArray()
                             var bytes=doc.toString().toByteArray().size+64
                             val byId=data.journeys.associateBy { it.id }
                             for(key in sessions.takeWhile { it!=journey.id }.asReversed()) {
                                 val earlier=byId[key] ?: continue
-                                val entry=sessionReport(earlier)
+                                val entry=sessionReport(data,earlier,sessions,zone)
                                 val size=entry.toString().toByteArray().size+1
                                 if(bytes+size>5_000_000) {
                                     android.widget.Toast.makeText(this@AssignmentActivity,"Las jornadas más antiguas se pueden enviar desde Historial.",android.widget.Toast.LENGTH_LONG).show()
@@ -577,6 +576,10 @@ class AssignmentActivity : TrackingMapActivity() {
                     if(options) AlertDialog(onDismissRequest={options=false},title={Text(zone.optString("name"))},text={
                         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
                             Text(zone.optString("worker"),style=MaterialTheme.typography.titleMedium)
+                            if(cloud.enabled) {
+                                Text(onlineStatus)
+                                TextButton(enabled=deviceId.isNotBlank(),onClick={copyDeviceCode()}) { Text("Copiar mi código de teléfono") }
+                            }
                             if(zone.optString("note").isNotBlank()) Text(zone.optString("note"))
                             if(previous.isNotEmpty()) Text("Violeta · recorridos anteriores",style=MaterialTheme.typography.bodySmall)
                             if(marks.isNotEmpty()) MarkLegend(marks)
@@ -601,7 +604,10 @@ class AssignmentActivity : TrackingMapActivity() {
                             Text("Pedile al Owner que vuelva a compartir esta tarea para vincularla.")
                         journey==null -> Button(onClick={prefs.edit().putString("selected",id).commit();action("start")},modifier=Modifier.fillMaxWidth()) { Text("Iniciar recorrido") }
                         journey.state=="FINISHED" -> {
-                            Button(modifier=Modifier.fillMaxWidth(),onClick={sendReport(journey)}) { Text("Enviar recorrido") }
+                            if (cloud.onlineTask(zone.getString("id"))) {
+                                Text(onlineStatus,style=MaterialTheme.typography.labelMedium)
+                                TextButton(onClick={sendReport(journey)}) { Text("Compartir copia") }
+                            } else Button(modifier=Modifier.fillMaxWidth(),onClick={sendReport(journey)}) { Text("Enviar recorrido") }
                             if(busyJourney==null && trustedZone) {
                                 if(confirmNew) AlertDialog(onDismissRequest={confirmNew=false},title={Text("¿Iniciar otra jornada?")},
                                     text={Text("El recorrido anterior queda guardado con sus marcas. El tiempo y la distancia de la nueva jornada empiezan en cero.")},
@@ -622,6 +628,14 @@ class AssignmentActivity : TrackingMapActivity() {
                         }
                     }
                 } else {
+                    if(cloud.enabled) {
+                        var targetDevice by remember(id) { mutableStateOf(cloud.recipient(zone.getString("worker"))) }
+                        Text(onlineStatus,style=MaterialTheme.typography.labelMedium)
+                        Field("Código del teléfono",targetDevice,{targetDevice=it.trim().take(128)})
+                        FilledTonalButton(enabled=targetDevice.matches(Regex("[A-Za-z0-9_-]{20,128}")),onClick={
+                            runCatching { cloud.assign(signedTask(zone),targetDevice) }.onFailure { msg=it.localizedMessage.orEmpty() }
+                        }) { Text("Enviar tarea en línea") }
+                    }
                     Button(onClick={runCatching { share(signedTask(zone)) }.onFailure { msg="No se pudo firmar o compartir la tarea." }}) { Text("Compartir tarea") }
                     FilledTonalButton(onClick={runCatching { qrTask=signedTask(zone) }.onFailure { msg="No se pudo preparar la vinculación." }}) { Text("QR y código de tarea") }
                     if(result!=null) {
@@ -636,11 +650,12 @@ class AssignmentActivity : TrackingMapActivity() {
             if(!worker && id==null) {
                 Choice("Zona guardada",sector,data.sectors.map { it.id to it.name }) { sector=it }
                 Field("Nombre del repartidor",person,{person=it.take(100)})
+                if(cloud.enabled) Field("Código del teléfono para envío en línea",recipient,{recipient=it.trim().take(128)})
                 Field("Indicación opcional",note,{note=it.take(500)})
                 val selected=data.sectors.find { it.id==sector }
                 if(selected!=null && (previousJourneys(data,selected.id).isNotEmpty() || work.reportsFor(work.tasksFor(selected,data.sectors)).isNotEmpty()))
                     Text("La tarea incluirá los tramos anteriores para retomar esta zona.",style=MaterialTheme.typography.bodySmall)
-                Button(enabled=work.loaded && selected!=null && person.isNotBlank(),onClick={
+                Button(enabled=work.loaded && selected!=null && person.isNotBlank() && (recipient.isBlank() || recipient.matches(Regex("[A-Za-z0-9_-]{20,128}"))),onClick={
                     val key=newId();val o=JSONObject().put("version",1).put("kind","task").put("id",key).put("worker",person.trim()).put("name",selected!!.name).put("polygon",selected.polygonJson).put("note",note).put("sectorId",selected.id)
                     val prior=work.reportsFor(work.tasksFor(selected,data.sectors)).flatMap { it.lines } +
                         previousJourneys(data,selected.id).flatMap { mapTracks(data,it) }
@@ -653,8 +668,9 @@ class AssignmentActivity : TrackingMapActivity() {
                     }
                     runCatching { val signed=signedTask(o)
                         if(selected.status!="ACTIVE") vm.perform { repo.saveSector(selected.copy(status="ACTIVE")) }
-                        prefs.edit().putBoolean("owner:$key",true).commit();id=key;revision++;share(signed) }.onFailure { msg="No se pudo preparar o compartir la tarea." }
-                }) { Text("Asignar y compartir") }
+                        prefs.edit().putBoolean("owner:$key",true).commit();id=key;revision++
+                        if(cloud.enabled && recipient.isNotBlank()) cloud.assign(signed,recipient) else share(signed) }.onFailure { msg="No se pudo preparar o compartir la tarea." }
+                }) { Text(if(cloud.enabled && recipient.isNotBlank()) "Asignar en línea" else "Asignar y compartir") }
             }
             if(!worker && id!=null) TextButton(onClick={id=null}) { Text("Otra asignación") }
             if(!worker && id==null) ids.filter { it!=id }.forEach { key ->

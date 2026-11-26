@@ -15,3 +15,7 @@ docs/capturas/
 *.ruta.json
 *.rcb
 .env
+
+.kotlin/
+.firebase/
+*-debug.log

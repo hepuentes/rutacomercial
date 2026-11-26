@@ -225,11 +225,13 @@ class TrackingService : Service(), LocationListener {
                         }
                         PAUSE -> {
                             repository.currentJourney()?.let { repository.pauseJourney(it.id, requestedAt,eventPosition) }
+                            (application as? com.rutacomercial.app.RutaApplication)?.cloud?.scheduleDelivery()
                             TrackingRuntime.mutable.update { it.copy(message = "Jornada en pausa. GPS detenido.") }
                             if (requestedGeneration == commandGeneration) finishService()
                         }
                         FINISH -> {
                             repository.currentJourney()?.let { repository.finishJourney(it.id, requestedAt,eventPosition) }
+                            (application as? com.rutacomercial.app.RutaApplication)?.cloud?.scheduleDelivery()
                             TrackingRuntime.mutable.update { it.copy(message = "Jornada finalizada y guardada. GPS detenido.") }
                             if (requestedGeneration == commandGeneration) finishService()
                         }

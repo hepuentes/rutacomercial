@@ -1,3 +1,4 @@
+import groovy.json.JsonSlurper
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -11,8 +12,8 @@ android {
         applicationId = "com.rutacomercial.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 24
-        versionName = "0.17.0"
+        versionCode = 25
+        versionName = "0.18.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     flavorDimensions += "edition"
@@ -31,11 +32,27 @@ android {
             buildConfigField("boolean", "WORKER_EDITION", "true")
         }
     }
+    productFlavors.configureEach {
+        val configRoot = providers.gradleProperty("firebaseConfigRoot").orNull ?: "src"
+        val config = file("$configRoot/$name/google-services.json")
+        if (config.exists()) {
+            val json = JsonSlurper().parse(config) as Map<*, *>
+            val info = json["project_info"] as Map<*, *>
+            val client = (json["client"] as List<*>).map { it as Map<*, *> }.single {
+                val ci = it["client_info"] as Map<*, *>
+                (ci["android_client_info"] as Map<*, *>)["package_name"] ==
+                    if (name == "owner") "com.rutacomercial.app" else "com.rutacomercial.app.repartidor"
+            }
+            resValue("string", "google_app_id", (client["client_info"] as Map<*, *>)["mobilesdk_app_id"].toString())
+            resValue("string", "google_api_key", ((client["api_key"] as List<*>).first() as Map<*, *>)["current_key"].toString())
+            resValue("string", "project_id", info["project_id"].toString())
+        }
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    buildFeatures { compose = true; buildConfig = true }
+    buildFeatures { compose = true; buildConfig = true; resValues = true }
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
     testOptions { unitTests.isReturnDefaultValues = true }
     sourceSets.getByName("androidTest").assets.srcDir("$projectDir/schemas")
@@ -44,6 +61,10 @@ android {
 ksp { arg("room.schemaLocation", "$projectDir/schemas") }
 
 dependencies {
+    implementation(platform("com.google.firebase:firebase-bom:34.7.0"))
+    implementation("com.google.firebase:firebase-auth")
+    implementation("com.google.firebase:firebase-firestore")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.11.0")
     implementation(libs.androidx.core)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime)
@@ -74,4 +95,3 @@ dependencies {
     debugImplementation(libs.androidx.compose.tooling)
     debugImplementation(libs.androidx.compose.test.manifest)
 }
-
