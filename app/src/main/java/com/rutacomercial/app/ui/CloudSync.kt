@@ -78,8 +78,8 @@ internal class CloudSync(private val app: RutaApplication) {
             for (change in snapshot.documentChanges) {
                 if (change.type != DocumentChange.Type.REMOVED) {
                     try { handle(change.document) }
-                    catch (_: IllegalArgumentException) { status.value = "Se recibiÛ un documento inv·lido" }
-                    catch (_: org.json.JSONException) { status.value = "Se recibiÛ un documento incompleto" }
+                    catch (_: IllegalArgumentException) { status.value = "Se recibi√≥ un documento inv√°lido" }
+                    catch (_: org.json.JSONException) { status.value = "Se recibi√≥ un documento incompleto" }
                 }
             }
         }
@@ -91,7 +91,7 @@ internal class CloudSync(private val app: RutaApplication) {
         require(recipient.matches(Regex("[A-Za-z0-9_-]{20,128}")) && recipient != device.value) { "Revis√° el c√≥digo del tel√©fono." }
         val id = task.getString("id")
         val assigned = prefs.getString("target:"+id,null)
-        require(assigned==null || assigned==recipient) { "Para cambiar de telÈfono, cre· otra asignaciÛn." }
+        require(assigned==null || assigned==recipient) { "Para cambiar de tel√©fono, cre√° otra asignaci√≥n." }
         check(prefs.edit().putString("target:"+id,recipient).putString("person:"+task.getString("worker").trim().lowercase(),recipient)
             .putString("send:"+id, recipient).commit())
         status.value = "Tarea pendiente de sincronizar"
