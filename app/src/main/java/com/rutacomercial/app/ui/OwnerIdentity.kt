@@ -37,7 +37,7 @@ internal object OwnerIdentity {
         return bytes.toByteArray()
     }
 
-    @Synchronized fun sign(source: JSONObject): JSONObject {
+    private fun ownerStore(): KeyStore {
         check(!com.rutacomercial.app.BuildConfig.WORKER_EDITION)
         val store=KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         if(!store.containsAlias(alias)) {
@@ -47,6 +47,32 @@ internal object OwnerIdentity {
                 generateKeyPair()
             }
         }
+        return store
+    }
+
+    /** Public key the worker trusts after scanning the Owner's link QR. */
+    @Synchronized fun publicKey(): String = Base64.getEncoder().encodeToString(ownerStore().getCertificate(alias).publicKey.encoded)
+
+    fun validKey(key: String): Boolean = runCatching {
+        KeyFactory.getInstance("EC").generatePublic(X509EncodedKeySpec(Base64.getDecoder().decode(key))); true
+    }.getOrDefault(false)
+
+    /** Worker side: trust this Owner unless another one is already bound. */
+    @Synchronized fun bind(prefs: SharedPreferences, key: String) {
+        require(validKey(key)) { "Ese QR no es de RutaComercial Owner." }
+        val current=prefs.getString(binding,null)
+        require(current==null || current==key) { "Este teléfono ya está vinculado con otro Owner." }
+        if(current==null) check(prefs.edit().putString(binding,key).commit()) { "No se pudo guardar la vinculación." }
+    }
+
+    /** Worker side: the already trusted Owner account presents a new key. */
+    @Synchronized fun rebind(prefs: SharedPreferences, key: String) {
+        require(validKey(key))
+        check(prefs.edit().putString(binding,key).commit())
+    }
+
+    @Synchronized fun sign(source: JSONObject): JSONObject {
+        val store=ownerStore()
         val task=JSONObject(source.toString()).put("version",3)
         task.put("qrCheck",digest(qr(task))).put("pinCheck",digest(task.getString("id")+":"+code(task)))
         val signer=Signature.getInstance("SHA256withECDSA")

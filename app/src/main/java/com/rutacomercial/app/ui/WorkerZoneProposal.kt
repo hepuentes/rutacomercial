@@ -17,10 +17,18 @@ import org.json.JSONObject
 internal fun proposalKey(id:String,kind:String):String = java.util.UUID.nameUUIDFromBytes(
     ("RutaComercial/proposal/"+kind+"/"+java.util.UUID.fromString(id)).toByteArray(Charsets.UTF_8)).toString()
 
+internal fun validProposal(o:JSONObject):Boolean = runCatching {
+    java.util.UUID.fromString(o.getString("id"))
+    o.getString("kind")=="proposal" && o.getInt("version")==1 &&
+        o.getString("name").isNotBlank() && o.getString("name").length<=200 &&
+        o.getString("worker").isNotBlank() && o.getString("worker").length<=100 &&
+        o.getString("polygon").length<=100000 && Geo.validPolygon(Geo.parsePolygon(o.getString("polygon")))
+}.getOrDefault(false)
+
 @Composable
 internal fun WorkerZoneProposal(worker:String, position:MapCoordinate?, initialZone:List<MapCoordinate>,
     references:List<MapSector>,tracks:List<MapTrack>,reference:MapCoordinate?,referenceRequest:Int,onImport:()->Unit,
-    onLocate:()->Unit, onShare:(JSONObject)->Unit, onClose:()->Unit) {
+    onLocate:()->Unit, online:Boolean, onShare:(JSONObject)->Unit, onClose:()->Unit) {
     val ctx=androidx.compose.ui.platform.LocalContext.current
     val nav=remember { PlaceNavigation() }
     val status by com.rutacomercial.app.tracking.TrackingRuntime.state.collectAsState()
@@ -77,12 +85,12 @@ internal fun WorkerZoneProposal(worker:String, position:MapCoordinate?, initialZ
         Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(8.dp)) {
             Field("Nombre de la zona",title,{title=it.take(200);proposalId=newId()})
             Field("Repartidor",person,{person=it.take(100);proposalId=newId()})
-            Text("El Owner revisa el límite y te devuelve la tarea para iniciar el recorrido.")
+            Text(if(online) "Le llega al Owner al instante. Cuando la acepte, la tarea aparece en tu app." else "El Owner revisa el límite y te devuelve la tarea para iniciar el recorrido.")
         }
     },confirmButton={Button(enabled=title.isNotBlank() && person.isNotBlank(),onClick={
         onShare(JSONObject().put("version",1).put("kind","proposal").put("id",proposalId)
             .put("name",title.trim()).put("worker",person.trim()).put("polygon",encoded))
-    }) { Text("Compartir") }},dismissButton={TextButton(onClick={details=false}) { Text("Editar borde") }})
+    }) { Text(if(online) "Enviar al Owner" else "Compartir") }},dismissButton={TextButton(onClick={details=false}) { Text("Editar borde") }})
 }
 
 internal fun consultGoogleMap(context:android.content.Context,point:MapCoordinate?) {

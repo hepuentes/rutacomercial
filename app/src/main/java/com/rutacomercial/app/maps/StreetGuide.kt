@@ -6,7 +6,7 @@ import kotlin.math.*
 internal data class StreetNode(val id: Long, val point: MapCoordinate)
 internal data class GuideStreet(val name: String, val nodes: List<StreetNode>)
 internal data class GuideStep(val street: String, val points: List<MapCoordinate>, val section: Int)
-internal data class StreetGuide(val steps: List<GuideStep>, val streets: List<List<MapCoordinate>>)
+internal data class StreetGuide(val steps: List<GuideStep>, val streets: List<List<MapCoordinate>>, val doneLegs: Int = 0, val totalLegs: Int = 0)
 
 private fun distance(a: MapCoordinate, b: MapCoordinate) =
     Geo.distanceM(a.latitude, a.longitude, b.latitude, b.longitude)
@@ -60,7 +60,56 @@ private class ZoneClip(val zone: List<MapCoordinate>) {
     }
 }
 
-internal fun planStreetGuide(streets: List<GuideStreet>, zone: List<MapCoordinate>, origin: MapCoordinate): StreetGuide {
+/**
+ * Marks which directed legs a walked track already covered. Direction stands in for the sidewalk:
+ * phone GPS (5-15 m) cannot tell sides apart, but it reliably tells which way the worker walked.
+ */
+internal class WalkedCoverage(tracks: List<List<MapCoordinate>>) {
+    private data class Seg(val ax: Double, val ay: Double, val bx: Double, val by: Double)
+    private val lat0 = tracks.firstOrNull { it.isNotEmpty() }?.first()?.latitude ?: 0.0
+    private val kx = 111_320.0 * cos(Math.toRadians(lat0))
+    private val ky = 110_540.0
+    private val cell = 30.0
+    private val grid = HashMap<Long, MutableList<Seg>>()
+    private fun x(p: MapCoordinate) = p.longitude * kx
+    private fun y(p: MapCoordinate) = p.latitude * ky
+    private fun key(cx: Long, cy: Long) = cx * 2_000_003L + cy
+    init {
+        for (track in tracks) for ((a, b) in track.zipWithNext()) {
+            val seg = Seg(x(a), y(a), x(b), y(b))
+            if (hypot(seg.bx - seg.ax, seg.by - seg.ay) < 0.5) continue
+            val cx = floor((seg.ax + seg.bx) / 2 / cell).toLong(); val cy = floor((seg.ay + seg.by) / 2 / cell).toLong()
+            grid.getOrPut(key(cx, cy)) { mutableListOf() }.add(seg)
+        }
+    }
+    private fun near(px: Double, py: Double, dx: Double, dy: Double): Boolean {
+        val cx = floor(px / cell).toLong(); val cy = floor(py / cell).toLong()
+        for (i in -1..1) for (j in -1..1) for (s in grid[key(cx + i, cy + j)].orEmpty()) {
+            val sx = s.bx - s.ax; val sy = s.by - s.ay; val len2 = sx * sx + sy * sy
+            val t = (((px - s.ax) * sx + (py - s.ay) * sy) / len2).coerceIn(0.0, 1.0)
+            if (hypot(s.ax + t * sx - px, s.ay + t * sy - py) > 20.0) continue
+            if ((sx * dx + sy * dy) / sqrt(len2) > 0.5) return true
+        }
+        return false
+    }
+    /** Covered when at least 60 % of points along the leg have a track nearby going the same way. */
+    fun covers(from: MapCoordinate, to: MapCoordinate): Boolean {
+        if (grid.isEmpty()) return false
+        val ax = x(from); val ay = y(from); val bx = x(to); val by = y(to)
+        val length = hypot(bx - ax, by - ay)
+        if (length < 1.0) return false
+        val dx = (bx - ax) / length; val dy = (by - ay) / length
+        val samples = (length / 10).toInt().coerceIn(2, 40)
+        val hits = (0..samples).count { i -> val t = i.toDouble() / samples; near(ax + t * (bx - ax), ay + t * (by - ay), dx, dy) }
+        return hits >= 0.6 * (samples + 1)
+    }
+}
+
+internal fun planStreetGuide(streets: List<GuideStreet>, zone: List<MapCoordinate>, origin: MapCoordinate,
+    walked: List<List<MapCoordinate>> = emptyList()): StreetGuide {
+    val coverage = WalkedCoverage(walked)
+    var total = 0
+    var done = 0
     val clip=ZoneClip(zone)
     val adjacent=mutableMapOf<StreetNode,MutableList<Leg>>()
     val seen=mutableSetOf<Pair<Long,Long>>()
@@ -103,6 +152,13 @@ internal fun planStreetGuide(streets: List<GuideStreet>, zone: List<MapCoordinat
         var previous:Leg?=null
         var points=mutableListOf<MapCoordinate>()
         for(leg in reversed.asReversed()) {
+            total++
+            if(coverage.covers(leg.from.point,leg.to.point)) {
+                done++
+                previous?.let { steps.add(GuideStep(it.street,points,section)) }
+                previous=null
+                continue
+            }
             val prior=previous
             if(prior==null || prior.street!=leg.street || prior.straightness(leg)<0.45) {
                 if(prior!=null) steps.add(GuideStep(prior.street,points,section))
@@ -113,5 +169,5 @@ internal fun planStreetGuide(streets: List<GuideStreet>, zone: List<MapCoordinat
         }
         previous?.let { steps.add(GuideStep(it.street,points,section)) }
     }
-    return StreetGuide(steps,outlines)
+    return StreetGuide(steps,outlines,done,total)
 }

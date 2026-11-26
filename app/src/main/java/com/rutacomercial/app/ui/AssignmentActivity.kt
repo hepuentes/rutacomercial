@@ -12,12 +12,14 @@ import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.Lifecycle
@@ -143,11 +145,7 @@ class AssignmentActivity : TrackingMapActivity() {
                     JSONObject(String(bytes,Charsets.UTF_8)).also { o ->
                         require(o.getInt("version") in 1..3); UUID.fromString(o.getString("id"))
                         when(o.getString("kind")) {
-                            "proposal" -> {
-                                require(o.getInt("version")==1 && o.getString("name").isNotBlank() && o.getString("name").length<=200 &&
-                                    o.getString("worker").isNotBlank() && o.getString("worker").length<=100)
-                                require(o.getString("polygon").length<=100000 && Geo.validPolygon(Geo.parsePolygon(o.getString("polygon"))))
-                            }
+                            "proposal" -> require(validProposal(o))
                             "task" -> { require(o.getString("name").length in 1..300 && o.getString("worker").length in 1..100 && o.optString("note").length<=500)
                                 require(o.getString("polygon").length<=100000 && Geo.validPolygon(Geo.parsePolygon(o.getString("polygon")))) }
                             "result" -> { validateBundle(o) }
@@ -268,8 +266,11 @@ class AssignmentActivity : TrackingMapActivity() {
             WorkerZoneProposal(zone?.optString("worker").orEmpty(),
                 tracking.position?.takeIf { System.currentTimeMillis()-(tracking.fixAt ?: 0L) in 0..30000 },
                 polygon,references,referenceTracks,referenceLat?.let { lat->referenceLon?.let { MapCoordinate(lat,it) } },referenceRequest,
-                onImport={sharedText=""},onLocate={action("locate")},onShare={ doc->
-                    runCatching { share(doc) }.onFailure { android.widget.Toast.makeText(this,"No se pudo compartir la propuesta.",android.widget.Toast.LENGTH_LONG).show() }
+                onImport={sharedText=""},onLocate={action("locate")},online=cloud.canPropose(),onShare={ doc->
+                    if(cloud.canPropose()) runCatching { cloud.propose(doc) }
+                        .onSuccess { msg="Propuesta enviada. Te avisamos cuando el Owner la acepte.";drawingProposal=false;referenceLat=null;referenceLon=null }
+                        .onFailure { android.widget.Toast.makeText(this,"No se pudo enviar la propuesta.",android.widget.Toast.LENGTH_LONG).show() }
+                    else runCatching { share(doc) }.onFailure { android.widget.Toast.makeText(this,"No se pudo compartir la propuesta.",android.widget.Toast.LENGTH_LONG).show() }
                 },onClose={drawingProposal=false;referenceLat=null;referenceLon=null})
             return
         }
@@ -286,17 +287,31 @@ class AssignmentActivity : TrackingMapActivity() {
                 }
             } else AssignmentBanner(
                 title=when { incoming?.optString("kind")=="proposal" -> "Zona propuesta"; incoming?.optString("kind")=="task" -> "Zona recibida"; worker && zone==null -> "Esperando una tarea"; worker -> "Mi recorrido"; else -> "Asignaciones" },
-                detail=when { incoming!=null -> incoming?.optString("name").orEmpty(); zone!=null -> zone.optString("name")+" · "+zone.optString("worker"); worker -> "Abrí la zona que te envió tu Owner."; else -> "RutaComercial Owner" },
+                detail=when { incoming!=null -> incoming?.optString("name").orEmpty(); zone!=null -> zone.optString("name")+" · "+zone.optString("worker"); worker -> if(cloud.enabled) "Cuando tu Owner te asigne una zona, aparece acá." else "Abrí la zona que te envió tu Owner."; else -> "RutaComercial Owner" },
                 large=incoming!=null || worker && zone==null
             )
             if(msg.isNotBlank()) Text(msg)
-            if(cloud.enabled && incoming==null && worker && !workerMap) {
+            if(cloud.enabled && incoming==null && worker && !workerMap && cloud.canPropose())
+                Text("✓ Vinculado con tu Owner · "+onlineStatus,style=MaterialTheme.typography.labelMedium)
+            else if(cloud.enabled && incoming==null && worker && !workerMap) {
+                WorkerLinkCard(deviceId,onLink={ invite,name ->
+                    runCatching { cloud.link(invite,name) }
+                        .onSuccess { msg="✓ Vinculado. Las tareas de tu Owner van a aparecer acá." }
+                        .onFailure { msg=it.localizedMessage ?: "No se pudo vincular." }
+                },onShareCode={
+                    startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain")
+                        .putExtra(Intent.EXTRA_TEXT,"Mi código de RutaComercial Repartidor: "+deviceId),"Enviar mi código al Owner"))
+                })
                 Text(onlineStatus,style=MaterialTheme.typography.labelMedium)
-                FilledTonalButton(enabled=deviceId.isNotBlank(),onClick={copyDeviceCode()}) { Text("Copiar mi código de teléfono") }
             }
             if(worker && busyJourney==null && incoming==null) pendingOnline.forEach { key ->
                 val doc=remember(key,onlineRevision) { read(key,"received") }
-                if(doc!=null) Button(onClick={incoming=doc}) { Text("Abrir tarea · "+doc.optString("name")) }
+                if(doc!=null) Surface(shape=MaterialTheme.shapes.large,color=MaterialTheme.colorScheme.primaryContainer) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp),verticalArrangement=Arrangement.spacedBy(6.dp)) {
+                        Text("Tenés una tarea nueva",style=MaterialTheme.typography.titleMedium)
+                        Button(onClick={incoming=doc},modifier=Modifier.fillMaxWidth().heightIn(min=56.dp)) { Text("Ver tarea · "+doc.optString("name"),fontSize=18.sp) }
+                    }
+                }
             }
             incoming?.let { obj ->
                 if(obj.optString("kind")=="proposal" && !worker) {
@@ -327,12 +342,13 @@ class AssignmentActivity : TrackingMapActivity() {
                                 }
                                 prefs.edit().putBoolean("owner:"+taskKey,true).apply()
                                 id=taskKey;reportId=null;incoming=null;revision++;setIntent(Intent())
-                                msg="Zona y tarea guardadas. Ya podés enviar el QR o el código."
-                                share(task)
+                                val phone=cloud.proposer(proposal)
+                                if(phone!=null) { cloud.assign(task,phone);msg="Zona guardada. La tarea se envió en línea a "+obj.getString("worker")+"." }
+                                else { msg="Zona y tarea guardadas. Ya podés enviar el QR o el código.";share(task) }
                             } catch(e:Exception) { msg=e.localizedMessage ?: "No se pudo preparar la tarea." }
                             finally { saving=false }
                         }
-                    }) { Text(if(existing==null) "Aceptar y compartir tarea" else "Reenviar tarea") }
+                    }) { Text(when { cloud.proposer(proposal)!=null && existing==null -> "Aceptar y enviar tarea"; existing==null -> "Aceptar y compartir tarea"; else -> "Reenviar tarea" }) }
                     TextButton(enabled=!saving,onClick={incoming=null;setIntent(Intent())}) { Text("Volver") }
                     return@Column
                 }
@@ -578,22 +594,26 @@ class AssignmentActivity : TrackingMapActivity() {
                             Text(zone.optString("worker"),style=MaterialTheme.typography.titleMedium)
                             if(cloud.enabled) {
                                 Text(onlineStatus)
-                                TextButton(enabled=deviceId.isNotBlank(),onClick={copyDeviceCode()}) { Text("Copiar mi código de teléfono") }
+                                if(!cloud.canPropose()) TextButton(enabled=deviceId.isNotBlank(),onClick={copyDeviceCode()}) { Text("Copiar mi código de teléfono") }
                             }
                             if(zone.optString("note").isNotBlank()) Text(zone.optString("note"))
                             if(previous.isNotEmpty()) Text("Violeta · recorridos anteriores",style=MaterialTheme.typography.bodySmall)
                             if(marks.isNotEmpty()) MarkLegend(marks)
-                            if(journey!=null && journey.id==busyJourney?.id) TextButton(onClick={options=false;sendReport(journey)}) { Text("Compartir avance") }
+                            if(journey!=null && journey.id==busyJourney?.id && !cloud.onlineTask(zone.getString("id"))) TextButton(onClick={options=false;sendReport(journey)}) { Text("Compartir avance") }
                             if(journey?.state=="FINISHED" && busyJourney==null && trustedZone)
                                 TextButton(onClick={options=false;confirmNew=true}) { Text("Nueva jornada en esta zona") }
                             if(busyJourney==null && data.journeys.any { it.state=="FINISHED" })
                                 TextButton(onClick={options=false;showHistory=true}) { Text("Historial de recorridos") }
                             TextButton(onClick={options=false;nav.startZone(zone.optString("name"),polygon)}) { Text("Cómo llegar a la zona") }
                             TextButton(onClick={options=false;nav.search=true}) { Text("Buscar un lugar") }
-                            TextButton(onClick={options=false;sharedText=""}) { Text("Traer ubicación de Google Maps") }
-                            TextButton(onClick={options=false;consultGoogleMap(this@AssignmentActivity,position ?: polygon.firstOrNull())}) { Text("Consultar en Google Maps") }
                             TextButton(onClick={options=false;drawingProposal=true}) { Text("Proponer zona") }
-                            if(busyJourney==null) TextButton(onClick={options=false;inbox=true}) { Text("Abrir tarea recibida") }
+                            var more by remember { mutableStateOf(false) }
+                            TextButton(onClick={more=!more}) { Text(if(more) "Menos opciones ▲" else "Más opciones ▼") }
+                            if(more) {
+                                TextButton(onClick={options=false;sharedText=""}) { Text("Traer ubicación de Google Maps") }
+                                TextButton(onClick={options=false;consultGoogleMap(this@AssignmentActivity,position ?: polygon.firstOrNull())}) { Text("Consultar en Google Maps") }
+                                if(busyJourney==null) TextButton(onClick={options=false;inbox=true}) { Text("Abrir tarea recibida por archivo") }
+                            }
                         }
                     },confirmButton={TextButton(onClick={options=false}) { Text("Volver al mapa") }})
                     if(journey==null && zone.optString("note").isNotBlank())
@@ -602,12 +622,10 @@ class AssignmentActivity : TrackingMapActivity() {
                         busyJourney!=null && busyJourney?.id!=journeyId -> { Text("Terminá el recorrido anterior para iniciar esta tarea."); Button(onClick={TrackingController.finish(this@AssignmentActivity)}) { Text("Terminar recorrido anterior") } }
                         journey==null && !trustedZone ->
                             Text("Pedile al Owner que vuelva a compartir esta tarea para vincularla.")
-                        journey==null -> Button(onClick={prefs.edit().putString("selected",id).commit();action("start")},modifier=Modifier.fillMaxWidth()) { Text("Iniciar recorrido") }
+                        journey==null -> Button(onClick={prefs.edit().putString("selected",id).commit();action("start")},modifier=Modifier.fillMaxWidth().heightIn(min=64.dp)) { Text("Iniciar recorrido",fontSize=20.sp) }
                         journey.state=="FINISHED" -> {
-                            if (cloud.onlineTask(zone.getString("id"))) {
-                                Text(onlineStatus,style=MaterialTheme.typography.labelMedium)
-                                TextButton(onClick={sendReport(journey)}) { Text("Compartir copia") }
-                            } else Button(modifier=Modifier.fillMaxWidth(),onClick={sendReport(journey)}) { Text("Enviar recorrido") }
+                            WorkerFinishedPanel(journey,if(cloud.onlineTask(zone.getString("id"))) workerSyncText(cloud.delivered(journey.id,journey.state),true) else null,
+                                onNewDay=if(busyJourney==null && trustedZone && historyJourney==null) ({ confirmNew=true }) else null,onShare={sendReport(journey)})
                             if(busyJourney==null && trustedZone) {
                                 if(confirmNew) AlertDialog(onDismissRequest={confirmNew=false},title={Text("¿Iniciar otra jornada?")},
                                     text={Text("El recorrido anterior queda guardado con sus marcas. El tiempo y la distancia de la nueva jornada empiezan en cero.")},
@@ -620,20 +638,19 @@ class AssignmentActivity : TrackingMapActivity() {
                                 }) { Text("Iniciar jornada") }})
                             }
                         }
-                        else -> { Text(tracking.message)
-                            Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                                FilledTonalButton(modifier=Modifier.weight(1f),onClick={if(journey.state=="PAUSED") action("resume") else TrackingController.pause(this@AssignmentActivity)}) { Text(if(journey.state=="PAUSED") "Reanudar" else "Pausar") }
-                                Button(modifier=Modifier.weight(1f),onClick={TrackingController.finish(this@AssignmentActivity)}) { Text("Terminar") }
-                            }
-                        }
+                        else -> WorkerJourneyPanel(journey,tracking.message,if(cloud.onlineTask(zone.getString("id"))) workerSyncText(cloud.delivered(journey.id,journey.state),false) else null,
+                            onPause={TrackingController.pause(this@AssignmentActivity)},onResume={action("resume")},
+                            onFinish={TrackingController.finish(this@AssignmentActivity)})
                     }
                 } else {
                     if(cloud.enabled) {
                         var targetDevice by remember(id) { mutableStateOf(cloud.recipient(zone.getString("worker"))) }
                         Text(onlineStatus,style=MaterialTheme.typography.labelMedium)
-                        Field("Código del teléfono",targetDevice,{targetDevice=it.trim().take(128)})
+                        Field("Código del teléfono",targetDevice,{targetDevice=deviceCode(it)})
                         FilledTonalButton(enabled=targetDevice.matches(Regex("[A-Za-z0-9_-]{20,128}")),onClick={
-                            runCatching { cloud.assign(signedTask(zone),targetDevice) }.onFailure { msg=it.localizedMessage.orEmpty() }
+                            runCatching { cloud.assign(signedTask(zone),targetDevice) }
+                                .onSuccess { msg="Tarea enviada a "+zone.optString("worker")+"." }
+                                .onFailure { msg=it.localizedMessage?.takeIf { m->m.isNotBlank() } ?: "No se pudo enviar la tarea." }
                         }) { Text("Enviar tarea en línea") }
                     }
                     Button(onClick={runCatching { share(signedTask(zone)) }.onFailure { msg="No se pudo firmar o compartir la tarea." }}) { Text("Compartir tarea") }
@@ -647,10 +664,36 @@ class AssignmentActivity : TrackingMapActivity() {
                     } else Text("Pendiente de recibir informe")
                 }
             }
+            if(!worker && id==null && incoming==null) {
+                val proposals=remember(revision,onlineRevision) { directory.listFiles().orEmpty()
+                    .filter { it.extension=="proposal" && !file(proposalKey(it.nameWithoutExtension,"task"),"task").exists() }
+                    .sortedByDescending { it.lastModified() }.mapNotNull { read(it.nameWithoutExtension,"proposal") } }
+                if(proposals.isNotEmpty()) Surface(shape=MaterialTheme.shapes.medium,color=MaterialTheme.colorScheme.tertiaryContainer) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp),verticalArrangement=Arrangement.spacedBy(4.dp)) {
+                        Text("Propuestas de zona por revisar",style=MaterialTheme.typography.titleSmall)
+                        proposals.forEach { p -> Button(modifier=Modifier.fillMaxWidth(),onClick={incoming=p;msg=""}) { Text(p.optString("name")+" · "+p.optString("worker")) } }
+                    }
+                }
+            }
+            if(!worker && id==null && cloud.enabled) {
+                OwnerGoogleAccount(cloud)
+                var showLinkQr by remember { mutableStateOf(false) }
+                val linked=remember(revision,onlineRevision) { cloud.linkedWorkers() }
+                if(linked.isNotEmpty()) {
+                    Text("Repartidores vinculados",style=MaterialTheme.typography.titleSmall)
+                    Row(Modifier.horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(6.dp)) {
+                        linked.forEach { (name,_) -> FilterChip(selected=person.trim().equals(name,true),onClick={person=name},label={Text(name)}) }
+                    }
+                }
+                OutlinedButton(enabled=deviceId.isNotBlank(),onClick={showLinkQr=true}) { Text("Vincular repartidor con QR") }
+                if(showLinkQr) OwnerLinkQrDialog(deviceId) { showLinkQr=false }
+            }
             if(!worker && id==null) {
                 Choice("Zona guardada",sector,data.sectors.map { it.id to it.name }) { sector=it }
                 Field("Nombre del repartidor",person,{person=it.take(100)})
-                if(cloud.enabled) Field("Código del teléfono para envío en línea",recipient,{recipient=it.trim().take(128)})
+                val linkedPhone=remember(recipient,onlineRevision) { cloud.linkedWorkers().any { it.second==recipient } }
+                if(cloud.enabled && linkedPhone) Text("✓ Teléfono vinculado · la tarea le llega en línea",style=MaterialTheme.typography.bodySmall)
+                else if(cloud.enabled) Field("Código del teléfono (si no está vinculado)",recipient,{recipient=deviceCode(it)})
                 Field("Indicación opcional",note,{note=it.take(500)})
                 val selected=data.sectors.find { it.id==sector }
                 if(selected!=null && (previousJourneys(data,selected.id).isNotEmpty() || work.reportsFor(work.tasksFor(selected,data.sectors)).isNotEmpty()))
@@ -669,7 +712,8 @@ class AssignmentActivity : TrackingMapActivity() {
                     runCatching { val signed=signedTask(o)
                         if(selected.status!="ACTIVE") vm.perform { repo.saveSector(selected.copy(status="ACTIVE")) }
                         prefs.edit().putBoolean("owner:$key",true).commit();id=key;revision++
-                        if(cloud.enabled && recipient.isNotBlank()) cloud.assign(signed,recipient) else share(signed) }.onFailure { msg="No se pudo preparar o compartir la tarea." }
+                        if(cloud.enabled && recipient.isNotBlank()) { cloud.assign(signed,recipient);msg="Tarea enviada a "+person.trim()+". Le aparece en su app en unos segundos." } else { msg="";share(signed) } }
+                        .onFailure { msg=it.localizedMessage?.takeIf { m->m.isNotBlank() } ?: "No se pudo preparar o compartir la tarea." }
                 }) { Text(if(cloud.enabled && recipient.isNotBlank()) "Asignar en línea" else "Asignar y compartir") }
             }
             if(!worker && id!=null) TextButton(onClick={id=null}) { Text("Otra asignación") }
@@ -703,7 +747,9 @@ class AssignmentActivity : TrackingMapActivity() {
                 Spacer(Modifier.weight(1f))
                 FilledTonalButton(modifier=Modifier.fillMaxWidth(),onClick={drawingProposal=true}) { Text("Proponer zona") }
             }
-            if(busyJourney==null && !workerMap) FilledTonalButton(modifier=Modifier.fillMaxWidth().heightIn(min=48.dp),onClick={inbox=true}) { Text(if(worker) "Abrir tarea recibida" else "Abrir archivo recibido") }
+            // Online workers get tasks automatically; the file inbox stays as a quiet fallback.
+            if(busyJourney==null && !workerMap && worker && cloud.enabled) TextButton(modifier=Modifier.fillMaxWidth(),onClick={inbox=true}) { Text("Abrir tarea recibida por archivo") }
+            else if(busyJourney==null && !workerMap) FilledTonalButton(modifier=Modifier.fillMaxWidth().heightIn(min=48.dp),onClick={inbox=true}) { Text(if(worker) "Abrir tarea recibida" else "Abrir archivo recibido") }
             if(!worker) TextButton(onClick={startActivity(Intent(this@AssignmentActivity,com.rutacomercial.app.MainActivity::class.java));finish()}) { Text("Volver al mapa") }
         }
     }

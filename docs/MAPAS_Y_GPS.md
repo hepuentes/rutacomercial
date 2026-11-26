@@ -52,3 +52,12 @@ Google Maps → buscar lugar o mantener pulsado para poner un pin → Compartir 
 También está **Opciones → Traer ubicación de Google Maps** para pegar un enlace o coordenadas. No se lee el portapapeles automáticamente. Los enlaces cortos requieren internet; se siguen hasta cinco redirecciones HTTPS de dominios de Maps permitidos, con límite total de 15 segundos. Se extraen coordenadas explícitas, dando prioridad al pin frente al centro de cámara. Enlaces de rutas, búsquedas sin coordenadas, múltiples lugares o identificadores opacos se rechazan con instrucciones para compartir un pin. No se analiza HTML ni se consulta Places. Los enlaces que solo describen la vista se identifican como aproximados y requieren revisión. El mapa interno y sus descargas siguen siendo OpenFreeMap; no se importan negocios, zonas amarillas ni mapas offline de Google.
 
 Documentación: [recepción de contenido compartido en Android](https://developer.android.com/develop/ui/compose/sharing/receive), [ubicación y batería](https://developer.android.com/develop/sensors-and-location/location/battery), [configurar Google Play services](https://developers.google.com/android/guides/setup), [LocationRequest.Builder](https://developers.google.com/android/reference/com/google/android/gms/location/LocationRequest.Builder).
+
+
+## Guía que descuenta lo recorrido
+
+La Guía arma un circuito que pasa por cada cuadra una vez en cada sentido, que equivale a una vereda por sentido. Al abrirla, descuenta las cuadras que los trazos de la zona ya cubrieron en ese mismo sentido (a 20 m o menos, en al menos el 60 % de la cuadra) y muestra cuánto falta. Usa el sentido de la marcha porque el GPS del teléfono no distingue de qué vereda viene la señal.
+
+## Ajustar la zona a lo recorrido
+
+En el mapa del Owner, **Opciones → Ajustar zona a lo recorrido** propone un borde alrededor de los trazos de la zona, con 15 m de margen. Se puede guardar, redibujar a mano o cambiar a rectángulo antes de tocar **Usar esta zona**. El borde sugerido es convexo: en un recorrido en L incluye la esquina interior y conviene recortarlo.

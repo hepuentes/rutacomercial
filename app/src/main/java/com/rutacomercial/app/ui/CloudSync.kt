@@ -22,6 +22,10 @@ import java.util.zip.GZIPInputStream
 import java.util.zip.GZIPOutputStream
 import java.security.MessageDigest
 
+/** Accepts the bare code or the whole message the worker shares ("Mi código …: CODE"). */
+internal fun deviceCode(text: String): String =
+    Regex("[A-Za-z0-9_-]{20,128}").findAll(text).lastOrNull()?.value ?: text.trim().take(128)
+
 internal class CloudSync(private val app: RutaApplication) {
     private val folder = File(app.filesDir, "assignments")
     private val prefs = app.getSharedPreferences("online", Context.MODE_PRIVATE)
@@ -35,17 +39,24 @@ internal class CloudSync(private val app: RutaApplication) {
     private val wake = MutableStateFlow(0)
     private val subscriptions = mutableMapOf<String, Job>()
 
+    /** Google account backing the Owner identity, or null while it is only anonymous. */
+    val account = MutableStateFlow<String?>(null)
+    private var session: Job? = null
+
     fun start() {
         if (!enabled) return
-        scope.launch {
+        session = scope.launch {
             val auth = FirebaseAuth.getInstance()
             retry {
                 device.value = auth.currentUser?.uid ?: requireNotNull(auth.signInAnonymously().await().user).uid
             }
+            account.value = auth.currentUser?.takeUnless { it.isAnonymous }?.email
             val uid = device.value
             val worker = BuildConfig.WORKER_EDITION
             status.value = "Conectado"
             launch { outgoingLoop(uid, worker) }
+            if (!worker) launch { retry { listen(db.collection("proposals").whereEqualTo("owner", uid)) { receiveProposal(it) } } }
+            if (!worker) launch { retry { listen(db.collection("links").whereEqualTo("owner", uid)) { receiveLink(it) } } }
             val field = if (worker) "worker" else "owner"
             retry {
                 listen(db.collection("tasks").whereEqualTo(field, uid)) { doc ->
@@ -78,8 +89,8 @@ internal class CloudSync(private val app: RutaApplication) {
             for (change in snapshot.documentChanges) {
                 if (change.type != DocumentChange.Type.REMOVED) {
                     try { handle(change.document) }
-                    catch (_: IllegalArgumentException) { status.value = "Se recibi� un documento inv�lido" }
-                    catch (_: org.json.JSONException) { status.value = "Se recibi� un documento incompleto" }
+                    catch (_: IllegalArgumentException) { status.value = "Se recibió un documento inválido" }
+                    catch (_: org.json.JSONException) { status.value = "Se recibió un documento incompleto" }
                 }
             }
         }
@@ -88,19 +99,69 @@ internal class CloudSync(private val app: RutaApplication) {
     fun recipient(name: String): String = prefs.getString("person:"+name.trim().lowercase(), "").orEmpty()
 
     fun assign(task: JSONObject, recipient: String) {
-        require(recipient.matches(Regex("[A-Za-z0-9_-]{20,128}")) && recipient != device.value) { "Revisá el código del teléfono." }
+        require(recipient.matches(Regex("[A-Za-z0-9_-]{20,128}"))) { "Revisá el código del teléfono." }
+        require(recipient != device.value) { "Ese es el código de este teléfono. Pegá el del repartidor." }
         val id = task.getString("id")
         val assigned = prefs.getString("target:"+id,null)
-        require(assigned==null || assigned==recipient) { "Para cambiar de tel�fono, cre� otra asignaci�n." }
+        require(assigned==null || assigned==recipient) { "Para cambiar de teléfono, creá otra asignación." }
         check(prefs.edit().putString("target:"+id,recipient).putString("person:"+task.getString("worker").trim().lowercase(),recipient)
             .putString("send:"+id, recipient).commit())
         status.value = "Tarea pendiente de sincronizar"
         scheduleDelivery()
     }
 
+    /** The worker learns the Owner's account from the first verified online task. */
+    fun canPropose() = enabled && prefs.contains("ownerUid")
+
+    fun propose(proposal: JSONObject) {
+        require(canPropose() && validProposal(proposal))
+        save(local(proposal.getString("id"),"outgoing"), proposal)
+        check(prefs.edit().putBoolean("propose:"+proposal.getString("id"), true).commit())
+        scheduleDelivery()
+        status.value = "Propuesta pendiente de enviar"
+    }
+
+    /**
+     * Owner: attach a Google account. Linking keeps the current identity; if that Google account
+     * already owns one (a reinstalled phone), sign into it so workers and tasks follow the Owner.
+     */
+    suspend fun useGoogle(idToken: String) {
+        val auth = FirebaseAuth.getInstance()
+        val credential = com.google.firebase.auth.GoogleAuthProvider.getCredential(idToken, null)
+        val user = try { requireNotNull(auth.currentUser).linkWithCredential(credential).await().user }
+            catch (_: com.google.firebase.auth.FirebaseAuthUserCollisionException) { auth.signInWithCredential(credential).await().user }
+        val uid = requireNotNull(user).uid
+        account.value = user.email
+        if (uid != device.value) { session?.cancel(); subscriptions.clear(); start() }
+    }
+
+    /** Worker: trust the scanned Owner and tell it this phone's code and name. */
+    fun link(invite: LinkInvite, name: String) {
+        require(enabled && name.isNotBlank() && name.length <= 100)
+        require(invite.owner != device.value) { "Ese QR es de este mismo teléfono." }
+        OwnerIdentity.bind(assignmentPrefs, invite.key)
+        check(prefs.edit().putString("ownerUid", invite.owner).putString("linkName", name).putBoolean("linkPending", true).commit())
+        scheduleDelivery()
+        status.value = "Vinculando con tu Owner…"
+    }
+
+    /** Owner: phones that linked by QR, as name to code. */
+    fun linkedWorkers(): List<Pair<String, String>> =
+        prefs.all.filterKeys { it.startsWith("worker:") }.map { (k, v) -> v.toString() to k.substringAfter(':') }.sortedBy { it.first.lowercase() }
+
+    /** Worker account that sent a proposal online, so the accepted task returns to that phone. */
+    fun proposer(proposalId: String): String? = prefs.getString("proposer:"+proposalId, null)
+
     fun onlineTask(id: String) = prefs.contains("linked:"+id)
+
+    /** True when the server confirmed this journey in its current state (the stamp starts with the state). */
+    fun delivered(journeyId: String, state: String) = prefs.getString("sent:"+journeyId, null)?.startsWith("$state/") == true
     fun pending(): List<String> = prefs.all.keys.filter { it.startsWith("pending:") }.map { it.substringAfter(':') }
-    fun accepted(id: String) { prefs.edit().remove("pending:"+id).apply(); revision.update { it+1 } }
+    fun accepted(id: String) {
+        val edit = prefs.edit().remove("pending:"+id)
+        prefs.getString("taskOwner:"+id, null)?.let { edit.putString("ownerUid", it) }
+        edit.apply(); revision.update { it+1 }
+    }
 
     private suspend fun outgoingLoop(uid: String, worker: Boolean) {
         var seen = wake.value
@@ -132,7 +193,23 @@ internal class CloudSync(private val app: RutaApplication) {
                 prefs.edit().remove(key).apply()
                 status.value = "Tarea sincronizada"
             }
-        } else if (prefs.all.keys.any { it.startsWith("linked:") }) {
+        } else {
+            val owner = prefs.getString("ownerUid", null)
+            if (owner != null && prefs.getBoolean("linkPending", false)) {
+                db.collection("links").document(uid).set(mapOf("owner" to owner, "worker" to uid,
+                    "name" to prefs.getString("linkName", "").orEmpty(), "at" to FieldValue.serverTimestamp())).await()
+                prefs.edit().remove("linkPending").apply()
+                status.value = "✓ Vinculado con tu Owner"
+            }
+            for (key in prefs.all.keys.filter { it.startsWith("propose:") }) {
+                if (owner == null) break
+                val id = key.substringAfter(':')
+                publish(db.collection("proposals").document(id), JSONObject(local(id,"outgoing").readText()), mapOf("owner" to owner, "worker" to uid))
+                prefs.edit().remove(key).apply()
+                status.value = "Propuesta enviada al Owner"
+            }
+        }
+        if (worker && prefs.all.keys.any { it.startsWith("linked:") }) {
                 val data = app.repository.snapshot()
                 for ((id,events) in data.audit.filter { it.action=="ASSIGNMENT" && onlineTask(it.detail) }.groupBy { it.detail }) {
                     val sessions = events.map { it.entityId }
@@ -165,6 +242,8 @@ internal class CloudSync(private val app: RutaApplication) {
         val job = android.app.job.JobInfo.Builder(18025, android.content.ComponentName(app, CloudDeliveryJob::class.java))
             .setRequiredNetworkType(android.app.job.JobInfo.NETWORK_TYPE_ANY).setPersisted(true).build()
         scheduler.schedule(job)
+        // Shown until the server confirms, so an offline phone never reads as synced.
+        if (BuildConfig.WORKER_EDITION && prefs.all.keys.any { it.startsWith("linked:") }) status.value = "Recorrido guardado · pendiente de enviar"
         wake.update { it+1 }
     }
 
@@ -181,13 +260,20 @@ internal class CloudSync(private val app: RutaApplication) {
 
     private suspend fun receiveTask(doc: DocumentSnapshot) {
         val existing = local(doc.id,"task")
-        if (existing.exists() && onlineTask(doc.id)) return
+        val ownerUid = requireNotNull(doc.getString("owner"))
+        if (existing.exists() && onlineTask(doc.id)) { prefs.edit().putString("ownerUid", ownerUid).apply(); return }
         val task = unpack(doc)
         require(task.getString("id")==doc.id && OwnerIdentity.verified(task))
         val owner = assignmentPrefs.getString(OwnerIdentity.binding,null)
-        if (owner!=null && owner!=task.getString("ownerKey")) return
+        // Firestore rules guarantee doc.owner is the sender's account, so the same Owner account
+        // with a new signing key (reinstalled phone) keeps its workers instead of stranding them.
+        if (owner!=null && owner!=task.getString("ownerKey")) {
+            if (prefs.getString("ownerUid", null) != ownerUid) return
+            OwnerIdentity.rebind(assignmentPrefs, task.getString("ownerKey"))
+        }
         if (existing.exists() && JSONObject(existing.readText()).optString("signature")!=task.getString("signature")) return
-        val edit = prefs.edit().putBoolean("linked:"+doc.id,true)
+        val edit = prefs.edit().putBoolean("linked:"+doc.id,true).putString("taskOwner:"+doc.id, ownerUid)
+        if (owner==task.getString("ownerKey")) edit.putString("ownerUid", ownerUid)
         if (!existing.exists()) {
             save(local(doc.id,"received"),task)
             edit.putBoolean("pending:"+doc.id,true)
@@ -207,6 +293,26 @@ internal class CloudSync(private val app: RutaApplication) {
         require(old==null || old.optString("assignmentId",doc.id)==taskId)
         if (newerReport(old,report)===report && old?.toString()!=report.toString()) save(file,report)
         status.value = "Último avance recibido"
+    }
+
+    private fun receiveLink(doc: DocumentSnapshot) {
+        val name = requireNotNull(doc.getString("name")).trim()
+        val worker = requireNotNull(doc.getString("worker"))
+        require(name.length in 1..100 && worker == doc.id && worker.matches(Regex("[A-Za-z0-9_-]{20,128}")))
+        if (prefs.getString("worker:$worker", null) == name) return
+        check(prefs.edit().putString("worker:$worker", name).putString("person:"+name.lowercase(), worker).commit())
+        revision.update { it+1 }
+        status.value = "Repartidor vinculado · $name"
+    }
+
+    private suspend fun receiveProposal(doc: DocumentSnapshot) {
+        val file = local(doc.id,"proposal")
+        if (file.exists()) return
+        val proposal = unpack(doc)
+        require(proposal.getString("id")==doc.id && validProposal(proposal))
+        check(prefs.edit().putString("proposer:"+doc.id, requireNotNull(doc.getString("worker"))).commit())
+        save(file, proposal)
+        status.value = "Propuesta recibida · "+proposal.getString("name")
     }
 
     private fun digest(bytes: ByteArray) = android.util.Base64.encodeToString(MessageDigest.getInstance("SHA-256").digest(bytes),android.util.Base64.NO_WRAP)
