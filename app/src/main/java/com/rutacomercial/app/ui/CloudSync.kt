@@ -119,6 +119,9 @@ internal class CloudSync(private val app: RutaApplication) {
     fun proposer(proposalId: String): String? = prefs.getString("proposer:"+proposalId, null)
 
     fun onlineTask(id: String) = prefs.contains("linked:"+id)
+
+    /** True when the server confirmed this journey in its current state (the stamp starts with the state). */
+    fun delivered(journeyId: String, state: String) = prefs.getString("sent:"+journeyId, null)?.startsWith("$state/") == true
     fun pending(): List<String> = prefs.all.keys.filter { it.startsWith("pending:") }.map { it.substringAfter(':') }
     fun accepted(id: String) {
         val edit = prefs.edit().remove("pending:"+id)
