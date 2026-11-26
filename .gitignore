@@ -19,3 +19,5 @@ docs/capturas/
 .kotlin/
 .firebase/
 *-debug.log
+
+google-services.json
