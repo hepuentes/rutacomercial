@@ -436,7 +436,8 @@ internal fun TerritoryMap(
             val zone=sectors.firstOrNull { it.selected }
             if(zone!=null && destination==null) androidx.compose.runtime.key(zone.id) {
                 WalkGuideControl(zone,currentLocation?.takeIf { locationFresh },previewGuide,ready,style,cameraTick,
-                    explore={gesture()},previewChanged=onGuidePreview,accuracy=accuracyMeters,onGuideActive=onGuideActive)
+                    explore={gesture()},previewChanged=onGuidePreview,accuracy=accuracyMeters,onGuideActive=onGuideActive,
+                    walked=tracks.map { it.points })
             }
             if(heading?.movement==true && !showMode) Surface(modifier=Modifier.align(Alignment.TopEnd).padding(top=166.dp,end=8.dp),shape=MaterialTheme.shapes.small) {
                 Text("Dirección de marcha",Modifier.padding(4.dp),style=MaterialTheme.typography.labelSmall)

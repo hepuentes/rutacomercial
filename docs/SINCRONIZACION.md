@@ -18,6 +18,12 @@ Una tarea que ya existe en Owner se puede enviar desde su detalle. Si se envió 
 
 El seguimiento se registra en la base local. Durante una jornada activa se intenta publicar el avance aproximadamente cada minuto. Al pausar o terminar se programa una entrega que puede ejecutarse cuando Android vuelva a disponer de conexión. Owner incorpora el informe a las mismas vistas de mapa e historial que usa la importación por archivo. Cada jornada tiene un identificador estable para reemplazar el avance al llegar el cierre.
 
+## Cuenta de Owner con Google
+
+En **Asignaciones → Conectar con Google**, el Owner asocia su identidad a una cuenta de Google (gratis con Firebase Authentication). La cuenta anónima se vincula sin cambiar de identidad. Si el Owner reinstala o cambia de teléfono, al conectar la misma cuenta recupera su identidad y la lista de repartidores vinculados. Los repartidores aceptan la nueva clave de firma porque llega desde la misma cuenta de Owner. Las zonas y recorridos guardados en el teléfono no viajan con la cuenta: para eso está el respaldo de la app.
+
+Requiere el proveedor Google activado en Firebase, la huella SHA-1 de la clave de firma registrada en la app Owner y el `google-services.json` descargado después de activarlo. Sin el cliente web en esa configuración, el botón no aparece.
+
 ## Propuestas de zona
 
 Cuando el Repartidor está vinculado (por QR o porque ya aceptó una tarea en línea), **Proponer zona → Enviar al Owner** sube la propuesta a Firestore (`proposals/{id}`), sin archivos. En Owner aparece en **Asignaciones → Propuestas de zona por revisar**. **Aceptar y enviar tarea** guarda la zona y devuelve la tarea en línea al mismo teléfono. Si el Repartidor todavía no está vinculado, la propuesta se comparte como archivo, igual que antes.

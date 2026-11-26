@@ -53,7 +53,9 @@ private fun drawLines(style:Style,id:String,data:String,active:Boolean) {
 
 @Composable
 internal fun BoxScope.WalkGuideControl(zone:MapSector,position:MapCoordinate?,preview:Boolean,map:MapLibreMap?,style:Style?,
-    cameraTick:Int,explore:()->Unit,previewChanged:(Boolean)->Unit,accuracy:Float?=null,onGuideActive:(Boolean)->Unit={}) {
+    cameraTick:Int,explore:()->Unit,previewChanged:(Boolean)->Unit,accuracy:Float?=null,onGuideActive:(Boolean)->Unit={},
+    walked:List<List<MapCoordinate>> = emptyList()) {
+    val latestWalked by rememberUpdatedState(walked)
     val latestActive by rememberUpdatedState(onGuideActive)
     val context=LocalContext.current
     val prefs=remember { context.getSharedPreferences("walk_guide",0) }
@@ -72,8 +74,10 @@ internal fun BoxScope.WalkGuideControl(zone:MapSector,position:MapCoordinate?,pr
         try {
             val network=streets ?: GuideStreets.load(context,zone.points).also { streets=it }
             val origin=latestPosition
-            val plan=withContext(Dispatchers.Default) { planStreetGuide(network,zone.points,origin ?: requireNotNull(DownloadArea.from(zone.points)).center) }
-            require(plan.steps.isNotEmpty()) { "No hay calles peatonales cartografiadas en esta zona." }
+            val tracks=latestWalked
+            val plan=withContext(Dispatchers.Default) { planStreetGuide(network,zone.points,origin ?: requireNotNull(DownloadArea.from(zone.points)).center,tracks) }
+            require(plan.totalLegs>0) { "No hay calles peatonales cartografiadas en esta zona." }
+            require(plan.steps.isNotEmpty()) { "✓ Ya recorriste todas las calles de esta zona en ambos sentidos." }
             guide=plan
             index=index.coerceIn(plan.steps.indices)
             needsPosition=origin==null
@@ -164,7 +168,8 @@ internal fun BoxScope.WalkGuideControl(zone:MapSector,position:MapCoordinate?,pr
             Column(Modifier.weight(1f).padding(horizontal=6.dp,vertical=4.dp)) {
                 if(step!=null) {
                     val section=if(plan.steps.last().section>1) " · sector "+step.section else ""
-                    Text("Guía · paso "+(index+1)+" de "+plan.steps.size+section,style=MaterialTheme.typography.labelSmall)
+                    val doneText=if(plan.doneLegs>0) " · hecho "+(100*plan.doneLegs/plan.totalLegs)+" %" else ""
+                    Text("Guía · paso "+(index+1)+" de "+plan.steps.size+section+doneText,style=MaterialTheme.typography.labelSmall)
                     if(ended) Text("⚑ Fin de la guía",style=MaterialTheme.typography.titleMedium)
                     else if(upcoming) Text(turnArrow(step,next)+"  "+(progress?.remaining?.toInt() ?: 0)+" m · "+
                         (next?.takeIf { it.section==step.section }?.street ?: "Fin del sector"),style=MaterialTheme.typography.titleMedium)

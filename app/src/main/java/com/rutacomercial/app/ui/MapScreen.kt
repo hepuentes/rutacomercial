@@ -54,6 +54,7 @@ internal fun MapScreen(vm: RutaViewModel, data: DataSnapshot, tracking: Tracking
     var point by remember { mutableStateOf<MapCoordinate?>(null) }
     var editing by rememberSaveable { mutableStateOf(false) }
     var draft by remember { mutableStateOf(emptyList<MapCoordinate>()) }
+    var outlineFit by remember { mutableStateOf(emptyList<MapCoordinate>()) }
     var movingDraft by rememberSaveable { mutableStateOf(false) }
     var sharedPin by remember { mutableStateOf<MapCoordinate?>(null) }
     var freehand by rememberSaveable { mutableStateOf(false) }
@@ -154,7 +155,7 @@ internal fun MapScreen(vm: RutaViewModel, data: DataSnapshot, tracking: Tracking
                 onGuideActive={guiding=it;if(it && !com.rutacomercial.app.tracking.TrackingController.hasLocationPermission(context)) onLocate()},onDrawHere={p->nav.close();point=p;createZone();sharedPin=p},
                 currentLocation = tracking.position, accuracyMeters = tracking.accuracyMeters, locationFresh = freshLocation,
                 selectionColor = newZoneColor, deliveryPoints = deliveries, draftPolygon = if (editing) emptyList() else point?.let { listOf(it) }.orEmpty(),
-                fitArea=if(allZones) sectors.flatMap { it.points } else if(editing && draftId==sectorId) polygon+reports.flatMap { r->r.lines.flatMap { it.points } } else emptyList(),
+                fitArea=if(allZones) sectors.flatMap { it.points } else if(editing && draftId==sectorId) polygon+outlineFit+reports.flatMap { r->r.lines.flatMap { it.points } } else emptyList(),
                 center = cameraCenter.takeUnless { allZones || editing && draftId==sectorId }, centerRequest = centerRequest, selectingZone = editing, freehand = freehand, moveWhileDrawing = movingDraft, fieldTools = selectedJourneyId == null,
                 followingLocation = followLocation && (tracking.isTracking || freshLocation),
                 onRecenter = {
@@ -312,8 +313,15 @@ internal fun MapScreen(vm: RutaViewModel, data: DataSnapshot, tracking: Tracking
                     Text("Azul · recorrido GPS. Verde claro · zona completada. El mapa incorpora el avance del repartidor cuando abrís su archivo.", style = MaterialTheme.typography.bodySmall)
                     sector?.let { s ->
                         FilledTonalButton(onClick={
-                            createZone();draftId=s.id;zoneName=s.name;freehand=true;draft=emptyList()
+                            createZone();draftId=s.id;zoneName=s.name;freehand=true;draft=emptyList();outlineFit=emptyList()
                         },modifier=Modifier.fillMaxWidth()) { Text("Redibujar límite de la zona") }
+                        val walkedHere = remember(mapLines) { mapLines.flatMap { it.points } }
+                        if (walkedHere.size >= 3) FilledTonalButton(onClick={
+                            val outline = trackOutline(walkedHere)
+                            if (outline.isEmpty()) vm.message("No hay suficiente recorrido para sugerir un borde.")
+                            else { createZone();draftId=s.id;zoneName=s.name;freehand=true;draft=outline;outlineFit=outline
+                                vm.message("Borde sugerido según lo recorrido. Ajustalo a mano o con rectángulo y tocá Usar esta zona.") }
+                        },modifier=Modifier.fillMaxWidth()) { Text("Ajustar zona a lo recorrido") }
                         TextButton(onClick={sheet="continue"}) { Text("Continuar esta zona") }
                         TextButton(onClick={sheet="remove"}) { Text("Eliminar zona del mapa") }
                         TextButton(onClick = { renamedZone = s.name; rename = true; sheet = null }) { Text("Cambiar nombre de la zona") }

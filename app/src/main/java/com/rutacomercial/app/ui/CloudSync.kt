@@ -39,13 +39,18 @@ internal class CloudSync(private val app: RutaApplication) {
     private val wake = MutableStateFlow(0)
     private val subscriptions = mutableMapOf<String, Job>()
 
+    /** Google account backing the Owner identity, or null while it is only anonymous. */
+    val account = MutableStateFlow<String?>(null)
+    private var session: Job? = null
+
     fun start() {
         if (!enabled) return
-        scope.launch {
+        session = scope.launch {
             val auth = FirebaseAuth.getInstance()
             retry {
                 device.value = auth.currentUser?.uid ?: requireNotNull(auth.signInAnonymously().await().user).uid
             }
+            account.value = auth.currentUser?.takeUnless { it.isAnonymous }?.email
             val uid = device.value
             val worker = BuildConfig.WORKER_EDITION
             status.value = "Conectado"
@@ -114,6 +119,20 @@ internal class CloudSync(private val app: RutaApplication) {
         check(prefs.edit().putBoolean("propose:"+proposal.getString("id"), true).commit())
         scheduleDelivery()
         status.value = "Propuesta pendiente de enviar"
+    }
+
+    /**
+     * Owner: attach a Google account. Linking keeps the current identity; if that Google account
+     * already owns one (a reinstalled phone), sign into it so workers and tasks follow the Owner.
+     */
+    suspend fun useGoogle(idToken: String) {
+        val auth = FirebaseAuth.getInstance()
+        val credential = com.google.firebase.auth.GoogleAuthProvider.getCredential(idToken, null)
+        val user = try { requireNotNull(auth.currentUser).linkWithCredential(credential).await().user }
+            catch (_: com.google.firebase.auth.FirebaseAuthUserCollisionException) { auth.signInWithCredential(credential).await().user }
+        val uid = requireNotNull(user).uid
+        account.value = user.email
+        if (uid != device.value) { session?.cancel(); subscriptions.clear(); start() }
     }
 
     /** Worker: trust the scanned Owner and tell it this phone's code and name. */
@@ -246,7 +265,12 @@ internal class CloudSync(private val app: RutaApplication) {
         val task = unpack(doc)
         require(task.getString("id")==doc.id && OwnerIdentity.verified(task))
         val owner = assignmentPrefs.getString(OwnerIdentity.binding,null)
-        if (owner!=null && owner!=task.getString("ownerKey")) return
+        // Firestore rules guarantee doc.owner is the sender's account, so the same Owner account
+        // with a new signing key (reinstalled phone) keeps its workers instead of stranding them.
+        if (owner!=null && owner!=task.getString("ownerKey")) {
+            if (prefs.getString("ownerUid", null) != ownerUid) return
+            OwnerIdentity.rebind(assignmentPrefs, task.getString("ownerKey"))
+        }
         if (existing.exists() && JSONObject(existing.readText()).optString("signature")!=task.getString("signature")) return
         val edit = prefs.edit().putBoolean("linked:"+doc.id,true).putString("taskOwner:"+doc.id, ownerUid)
         if (owner==task.getString("ownerKey")) edit.putString("ownerUid", ownerUid)

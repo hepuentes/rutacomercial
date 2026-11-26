@@ -676,6 +676,7 @@ class AssignmentActivity : TrackingMapActivity() {
                 }
             }
             if(!worker && id==null && cloud.enabled) {
+                OwnerGoogleAccount(cloud)
                 var showLinkQr by remember { mutableStateOf(false) }
                 val linked=remember(revision,onlineRevision) { cloud.linkedWorkers() }
                 if(linked.isNotEmpty()) {

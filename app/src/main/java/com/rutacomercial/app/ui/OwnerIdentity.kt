@@ -65,6 +65,12 @@ internal object OwnerIdentity {
         if(current==null) check(prefs.edit().putString(binding,key).commit()) { "No se pudo guardar la vinculación." }
     }
 
+    /** Worker side: the already trusted Owner account presents a new key. */
+    @Synchronized fun rebind(prefs: SharedPreferences, key: String) {
+        require(validKey(key))
+        check(prefs.edit().putString(binding,key).commit())
+    }
+
     @Synchronized fun sign(source: JSONObject): JSONObject {
         val store=ownerStore()
         val task=JSONObject(source.toString()).put("version",3)
