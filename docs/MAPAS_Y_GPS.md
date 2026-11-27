@@ -61,3 +61,11 @@ La Guía arma un circuito que pasa por cada cuadra una vez en cada sentido, que 
 ## Ajustar la zona a lo recorrido
 
 En el mapa del Owner, **Opciones → Ajustar zona a lo recorrido** propone un borde alrededor de los trazos de la zona, con 15 m de margen. Se puede guardar, redibujar a mano o cambiar a rectángulo antes de tocar **Usar esta zona**. El borde sugerido es convexo: en un recorrido en L incluye la esquina interior y conviene recortarlo.
+
+## Dirección del abanico
+
+El abanico combina la brújula del teléfono (vector de rotación: giroscopio, acelerómetro y magnetómetro) con el rumbo que mide el GPS al caminar. Con el teléfono vertical mirando una calle, la app usa la dirección de la cámara trasera. Mientras caminás, aprende cuánto se desvía la brújula respecto del GPS (metal, autos, edificios) y aplica esa corrección cuando te detenés. Si la brújula está imprecisa, el mapa pide moverla en forma de 8 y usa el rumbo del GPS.
+
+## Respaldo
+
+El respaldo cifrado (versión 3) incluye también las tareas, los informes recibidos de los repartidores y las propuestas. Los respaldos anteriores se siguen restaurando, sin esa parte.

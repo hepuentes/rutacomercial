@@ -68,7 +68,7 @@ private fun SectorEditor(vm:RutaViewModel,data:DataSnapshot,existing:Sector?,pos
     var status by remember{mutableStateOf(existing?.status ?: "PENDING")}
     var points by remember{mutableStateOf(existing?.let{Geo.parsePolygon(it.polygonJson).map{p->MapCoordinate(p.first,p.second)}} ?: emptyList())}
     PageHeading(if(existing==null)"Dibujar sector" else "Modificar sector","Tocá al menos tres puntos del mapa, siguiendo el contorno sin cruzar los lados.")
-    TerritoryMap(modifier=Modifier.fillMaxWidth().height(320.dp),sectors=mapSectors(data).filter{it.id!=existing?.id},draftPolygon=points,
+    TerritoryMap(modifier=Modifier.fillMaxWidth().mapHeight(.6f),sectors=mapSectors(data).filter{it.id!=existing?.id},draftPolygon=points,
         currentLocation=position,center=points.firstOrNull() ?: position,onMapTap={points=points+it})
     Text("${points.size} vértices seleccionados")
     Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
@@ -107,7 +107,7 @@ private fun SectorHistory(data:DataSnapshot,sector:Sector,onClose:()->Unit) {
     val polygon=Geo.parsePolygon(chosen?.polygonJson ?: sector.polygonJson).map{MapCoordinate(it.first,it.second)}
     AlertDialog(onDismissRequest=onClose,title={Text("Límites de ${sector.name}")},text={Column(verticalArrangement=Arrangement.spacedBy(10.dp)){
         Choice("Revisión",revision,revisions.map{it.revision to "${it.revision} · ${dateText(it.changedAt)}"}){revision=it}
-        TerritoryMap(Modifier.fillMaxWidth().height(260.dp),sectors=listOf(MapSector(sector.id,sector.name,sector.color,polygon)),center=polygon.firstOrNull())
+        TerritoryMap(Modifier.fillMaxWidth().mapHeight(.55f),sectors=listOf(MapSector(sector.id,sector.name,sector.color,polygon)),center=polygon.firstOrNull())
         Text("Las visitas conservan el sector declarado en su fecha. Los cambios de límites no reescriben el historial.",style=MaterialTheme.typography.bodySmall)
     }},confirmButton={TextButton(onClick=onClose){Text("Cerrar")}})
 }

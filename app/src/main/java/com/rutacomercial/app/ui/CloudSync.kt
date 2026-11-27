@@ -62,6 +62,8 @@ internal class CloudSync(private val app: RutaApplication) {
                 listen(db.collection("tasks").whereEqualTo(field, uid)) { doc ->
                     if (worker) receiveTask(doc)
                     else if (doc.id !in subscriptions) {
+                        // A task the worker uploaded after receiving it by file is online from now on.
+                        doc.getString("worker")?.let { w -> if (!prefs.contains("target:"+doc.id)) prefs.edit().putString("target:"+doc.id, w).apply() }
                         subscriptions[doc.id] = scope.launch {
                             retry { listen(doc.reference.collection("reports")) { receiveReport(doc.id, it) } }
                         }
@@ -162,6 +164,9 @@ internal class CloudSync(private val app: RutaApplication) {
     fun proposer(proposalId: String): String? = prefs.getString("proposer:"+proposalId, null)
 
     fun onlineTask(id: String) = prefs.contains("linked:"+id)
+
+    /** Owner: this task already went to a phone through Firestore. */
+    fun sentOnline(id: String) = prefs.contains("target:"+id)
 
     /** True when the server confirmed this journey in its current state (the stamp starts with the state). */
     fun delivered(journeyId: String, state: String) = prefs.getString("sent:"+journeyId, null)?.startsWith("$state/") == true

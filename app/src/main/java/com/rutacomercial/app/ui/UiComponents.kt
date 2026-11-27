@@ -104,3 +104,11 @@ internal fun ConfirmDialog(title: String, message: String, confirm: String, onDi
         confirmButton = { Button(onClick = onConfirm) { Text(confirm) } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } })
 }
+
+
+/** Map height as a share of this phone's screen, so small and large phones both give most of it to the map. */
+@androidx.compose.runtime.Composable
+internal fun Modifier.mapHeight(fraction: Float): Modifier {
+    val screen = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp
+    return this.height(maxOf(240f, screen * fraction).dp)
+}

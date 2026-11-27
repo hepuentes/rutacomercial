@@ -325,7 +325,7 @@ class AssignmentActivity : TrackingMapActivity() {
                     var zoneTitle by androidx.compose.runtime.saveable.rememberSaveable(proposal) { mutableStateOf(existing?.optString("name") ?: obj.getString("name")) }
                     var saving by remember(obj) { mutableStateOf(false) }
                     Text("Propuesta de "+obj.getString("worker"))
-                    TerritoryMap(Modifier.fillMaxWidth().height(250.dp),sectors=listOf(MapSector(zoneKey,zoneTitle,"#087F75",contour,true)),fitArea=contour)
+                    TerritoryMap(Modifier.fillMaxWidth().mapHeight(.55f),sectors=listOf(MapSector(zoneKey,zoneTitle,"#087F75",contour,true)),fitArea=contour)
                     if(existing==null) Field("Nombre de la zona",zoneTitle,{zoneTitle=it.take(200)})
                     else Text("Tarea guardada · "+existing.getString("name"))
                     Button(modifier=Modifier.fillMaxWidth(),enabled=!saving && zoneTitle.isNotBlank(),onClick={
@@ -366,7 +366,7 @@ class AssignmentActivity : TrackingMapActivity() {
                 val needsPairing=invitation && !(prefs.getString(OwnerIdentity.binding,null)==obj.optString("ownerKey") && (cloud.onlineTask(key) || read(key,"task")?.optString("signature")==obj.optString("signature")))
                 if(invitation && (confirmed || !needsPairing)) {
                     val preview=remember(obj) { geometry(obj) }
-                    TerritoryMap(Modifier.fillMaxWidth().height(180.dp),sectors=listOf(MapSector(key,obj.getString("name"),"#087F75",preview,true)),fitArea=preview)
+                    TerritoryMap(Modifier.fillMaxWidth().mapHeight(.45f),sectors=listOf(MapSector(key,obj.getString("name"),"#087F75",preview,true)),fitArea=preview)
                 }
                 if(needsPairing && !confirmed) PairFirstTask(obj,prefs) { confirmed=true;msg="" }
                 Button(modifier=Modifier.fillMaxWidth().heightIn(min=54.dp),enabled=!needsPairing || confirmed,onClick={
@@ -545,25 +545,25 @@ class AssignmentActivity : TrackingMapActivity() {
                 val previousPins=remember(zone,sessions,journeyId,data.audit,data.points) {
                     previousMarks(zone)+sessions.takeWhile { it!=journeyId }.flatMap { journeyMarks(data,it) }
                 }
-                TerritoryMap(Modifier.fillMaxWidth().then(if(worker) Modifier.weight(1f) else Modifier.height(340.dp)),sectors=listOf(MapSector(id!!,zone.getString("name"),"#087F75",polygon,true)),tracks=if(worker) previous+live else previous+taskReports.flatMap { it.lines },
+                Box(Modifier.fillMaxWidth().then(if(worker) Modifier.weight(1f) else Modifier.mapHeight(.62f))) {
+                TerritoryMap(Modifier.fillMaxSize(),sectors=listOf(MapSector(id!!,zone.getString("name"),"#087F75",polygon,true)),tracks=if(worker) previous+live else previous+taskReports.flatMap { it.lines },
                     marks=if(worker) previousPins+marks else previousMarks(zone)+taskReports.flatMap { it.marks },onMapGesture={userCamera=true;locateRequested=false;following=false},fieldTools=worker,
                     onGuideActive={guiding=it},navigation=nav.takeIf { worker },onDrawHere={p->nav.close();proposeAt(p)},onNavigateLocate={action("locate")},
                     previewGuide=worker && journey==null,onGuidePreview={showingPreview=it},
                     followingLocation=following && fresh,onRecenter=if(worker) ({ userCamera=true;following=true;locateRequested=true;action("locate") }) else null,center=target,centerRequest=cameraRequest,fitArea=if(target==null) polygon+listOfNotNull(overview) else emptyList(),
                     currentLocation=if(worker) displayed else null,locationFresh=fresh,accuracyMeters=tracking.accuracyMeters,
                     businesses=boundaryPoint?.let { listOf(MapBusiness("arrival","Punto de llegada sugerido",it.latitude,it.longitude,"#BA5018")) }.orEmpty())
+                // Floating over the map so the map keeps the space on small phones.
+                if(worker) Column(Modifier.align(Alignment.TopStart).padding(8.dp),verticalArrangement=Arrangement.spacedBy(6.dp)) {
+                    SmallFloatingAction("Ver zona") { userCamera=true;following=false;overview=null;locateRequested=false;target=null;cameraRequest++ }
+                    if(boundaryPoint!=null) SmallFloatingAction("Cómo llegar") { nav.startZone(zone.optString("name"),polygon) }
+                }
+                }
                 if(worker) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.spacedBy(6.dp)) {
-                        MapAction("Ver zona", R.drawable.worker_zone) { userCamera=true;following=false;overview=null;locateRequested=false;target=null;cameraRequest++ }
-                        if(boundaryPoint!=null) MapAction("Cómo llegar", R.drawable.worker_directions) {
-                            nav.startZone(zone.optString("name"),polygon)
-
-                        }
-                    }
                     if (boundaryPoint!=null && position!=null) {
                         val meters=Geo.distanceM(position.latitude,position.longitude,boundaryPoint.latitude,boundaryPoint.longitude)
                         Text("Punto naranja · llegada sugerida a ${if(meters>=1000) number(meters/1000,1)+" km" else meters.toInt().toString()+" m"} en línea recta",style=MaterialTheme.typography.bodySmall)
-                    } else if(position!=null && journey==null) Text("Estás en la zona asignada",style=MaterialTheme.typography.bodySmall)
+                    }
                     if(android.os.Build.VERSION.SDK_INT>=28 && activeMap && getSystemService(android.app.ActivityManager::class.java).isBackgroundRestricted) {
                         TextButton(onClick={startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,Uri.parse("package:"+packageName)))}) {
                             Text("Android restringe esta app · Revisar batería")
@@ -610,13 +610,9 @@ class AssignmentActivity : TrackingMapActivity() {
                             TextButton(onClick={options=false;nav.startZone(zone.optString("name"),polygon)}) { Text("Cómo llegar a la zona") }
                             TextButton(onClick={options=false;nav.search=true}) { Text("Buscar un lugar") }
                             TextButton(onClick={options=false;drawingProposal=true}) { Text("Proponer zona") }
-                            var more by remember { mutableStateOf(false) }
-                            TextButton(onClick={more=!more}) { Text(if(more) "Menos opciones ▲" else "Más opciones ▼") }
-                            if(more) {
-                                TextButton(onClick={options=false;sharedText=""}) { Text("Traer ubicación de Google Maps") }
-                                TextButton(onClick={options=false;consultGoogleMap(this@AssignmentActivity,position ?: polygon.firstOrNull())}) { Text("Consultar en Google Maps") }
-                                if(busyJourney==null) TextButton(onClick={options=false;inbox=true}) { Text("Abrir tarea recibida por archivo") }
-                            }
+                            TextButton(onClick={options=false;sharedText=""}) { Text("Traer ubicación de Google Maps") }
+                            TextButton(onClick={options=false;consultGoogleMap(this@AssignmentActivity,position ?: polygon.firstOrNull())}) { Text("Consultar en Google Maps") }
+                            if(busyJourney==null) TextButton(onClick={options=false;inbox=true}) { Text("Abrir tarea recibida por archivo") }
                         }
                     },confirmButton={TextButton(onClick={options=false}) { Text("Volver al mapa") }})
                     if(journey==null && zone.optString("note").isNotBlank())
@@ -646,7 +642,9 @@ class AssignmentActivity : TrackingMapActivity() {
                             onFinish={TrackingController.finish(this@AssignmentActivity)})
                     }
                 } else {
-                    if(cloud.enabled) {
+                    val online=cloud.enabled && cloud.sentOnline(zone.getString("id"))
+                    if(online) Text("✓ Enviada en línea a "+zone.optString("worker")+" · "+onlineStatus,style=MaterialTheme.typography.labelMedium)
+                    else if(cloud.enabled) {
                         var targetDevice by remember(id) { mutableStateOf(cloud.recipient(zone.getString("worker"))) }
                         Text(onlineStatus,style=MaterialTheme.typography.labelMedium)
                         Field("Código del teléfono",targetDevice,{targetDevice=deviceCode(it)})
@@ -656,8 +654,10 @@ class AssignmentActivity : TrackingMapActivity() {
                                 .onFailure { msg=it.localizedMessage?.takeIf { m->m.isNotBlank() } ?: "No se pudo enviar la tarea." }
                         }) { Text("Enviar tarea en línea") }
                     }
-                    Button(onClick={runCatching { share(signedTask(zone)) }.onFailure { msg="No se pudo firmar o compartir la tarea." }}) { Text("Compartir tarea") }
-                    FilledTonalButton(onClick={runCatching { qrTask=signedTask(zone) }.onFailure { msg="No se pudo preparar la vinculación." }}) { Text("QR y código de tarea") }
+                    if(!online) {
+                        Button(onClick={runCatching { share(signedTask(zone)) }.onFailure { msg="No se pudo firmar o compartir la tarea." }}) { Text("Compartir tarea por archivo") }
+                        FilledTonalButton(onClick={runCatching { qrTask=signedTask(zone) }.onFailure { msg="No se pudo preparar la vinculación." }}) { Text("QR y código de tarea") }
+                    }
                     if(result!=null) {
                         val coverage=remember(taskReports,polygon) { ZoneCoverage.percent(polygon.map { it.latitude to it.longitude },taskReports.flatMap { it.lines }.flatMap { it.points }.map { it.latitude to it.longitude }) }
                         Text("Total recibido · ${number(taskReports.sumOf { it.meters }/1000,2)} km · ${hours(taskReports.sumOf { it.duration })} · cobertura ${coverage?.let { "$it %" } ?: "sin estimación"}")
@@ -757,6 +757,7 @@ class AssignmentActivity : TrackingMapActivity() {
             }
             // Online workers get tasks automatically; the file inbox stays as a quiet fallback.
             if(busyJourney==null && !workerMap && worker && cloud.enabled) TextButton(modifier=Modifier.fillMaxWidth(),onClick={inbox=true}) { Text("Abrir tarea recibida por archivo") }
+            else if(busyJourney==null && !workerMap && cloud.enabled) TextButton(modifier=Modifier.fillMaxWidth(),onClick={inbox=true}) { Text("Abrir archivo recibido") }
             else if(busyJourney==null && !workerMap) FilledTonalButton(modifier=Modifier.fillMaxWidth().heightIn(min=48.dp),onClick={inbox=true}) { Text(if(worker) "Abrir tarea recibida" else "Abrir archivo recibido") }
             if(!worker) TextButton(onClick={startActivity(Intent(this@AssignmentActivity,com.rutacomercial.app.MainActivity::class.java));finish()}) { Text("Volver al mapa") }
         }
@@ -764,23 +765,12 @@ class AssignmentActivity : TrackingMapActivity() {
 }
 
 @Composable
-private fun RowScope.MapAction(label: String, icon: Int, onClick: () -> Unit) {
-    FilledTonalButton(
-        onClick = onClick,
-        modifier = Modifier.weight(1f).heightIn(min = 48.dp),
-        shape = MaterialTheme.shapes.medium,
-        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 5.dp),
-        colors = ButtonDefaults.filledTonalButtonColors(
-            containerColor = MaterialTheme.colorScheme.primaryContainer,
-            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
-        )
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(4.dp)) {
-            Icon(painterResource(icon), contentDescription = null, modifier = Modifier.size(20.dp))
-            Text(label, style = MaterialTheme.typography.labelMedium, textAlign = TextAlign.Center)
-        }
+private fun SmallFloatingAction(label: String, onClick: () -> Unit) {
+    Surface(onClick=onClick,shape=MaterialTheme.shapes.extraLarge,color=MaterialTheme.colorScheme.surface,shadowElevation=3.dp) {
+        Text(label,Modifier.padding(horizontal=14.dp,vertical=10.dp),style=MaterialTheme.typography.labelLarge)
     }
 }
+
 
 @Composable
 private fun MarkLegend(marks:List<RouteMark>) {

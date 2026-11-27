@@ -94,7 +94,7 @@ fun RutaApp(repository: Repository, onExport: (format: String, journeyId: String
                         "Mapas sin conexión" -> ScreenColumn {
                             PageHeading("Mapas sin conexión", "Descargá una región pequeña antes de salir. El GPS y los registros funcionan sin internet.")
                             Text("Tocá el mapa para elegir el centro de la región, incluso si todavía no estás allí.")
-                            TerritoryMap(Modifier.fillMaxWidth().height(260.dp),currentLocation=tracking.position,
+                            TerritoryMap(Modifier.fillMaxWidth().mapHeight(.5f),currentLocation=tracking.position,
                                 center=selectedMapPoint ?: tracking.position,onMapTap={selectedMapPoint=it},
                                 draftPolygon=selectedMapPoint?.let{listOf(it)} ?: emptyList())
                             OutlinedButton(onClick={selectedMapPoint=null;locate()},modifier=Modifier.fillMaxWidth()){Text("Usar mi ubicación")}

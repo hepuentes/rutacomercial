@@ -158,9 +158,13 @@ internal fun TerritoryMap(
     val compassLabel = when(compassMode) { 2 -> "Seguir giro"; 1 -> "Rumbo fijo"; else -> "Norte arriba" }
     val followBearing = compassMode == 2
     val showHeading=(fieldTools || compactNavigation) && !selectingZone
-    val device = deviceHeading(showHeading,currentLocation,compactNavigation)
-    val course = travelHeading(showHeading && locationFresh && device==null,currentLocation,accuracyMeters)
-    val heading = device ?: course
+    val rawDevice = deviceHeading(showHeading,currentLocation,compactNavigation)
+    // GPS course is always measured while walking: it stands in for a missing compass and corrects a drifting one.
+    val course = travelHeading(showHeading && locationFresh,currentLocation,accuracyMeters)
+    val bias = remember { CompassBias() }
+    if (rawDevice != null && course != null) bias.learn(rawDevice.degrees, course.degrees)
+    val device = rawDevice?.let { d -> if (bias.samples >= 2) d.copy(degrees = bias.apply(d.degrees), spread = minOf(d.spread, 50f)) else d }
+    val heading = if (course != null && (device == null || device.spread >= 100f)) course else device ?: course
     var cameraTick by remember { androidx.compose.runtime.mutableIntStateOf(0) }
     val rectangle by rememberUpdatedState(selectingZone && !freehand)
     LaunchedEffect(map,fieldTools,selectingZone) {
@@ -297,7 +301,7 @@ internal fun TerritoryMap(
         listOf("highway-name-minor" to 12f, "highway-name-major" to 11f, "highway-name-path" to 14f).forEach { (id, minimum) ->
             style?.getLayerAs<org.maplibre.android.style.layers.SymbolLayer>(id)?.apply {
                 minZoom = minimum
-                setProperties(textSize(12.5f), textPadding(0.5f), textAllowOverlap(id!="highway-name-path"), textHaloWidth(1.4f), textHaloColor("#FFFFFF"), textColor("#27352F"), symbolSpacing(95f))
+                setProperties(textSize(14f), textPadding(0.5f), textAllowOverlap(id!="highway-name-path"), textHaloWidth(1.6f), textHaloColor("#FFFFFF"), textColor("#1F2A24"), symbolSpacing(70f))
             }
         }
     }
@@ -446,7 +450,7 @@ internal fun TerritoryMap(
                 modifier=Modifier.align(Alignment.TopEnd).padding(top=166.dp,end=8.dp),
                 shape=MaterialTheme.shapes.medium,color=Color(0xFF202C34),contentColor=Color.White
             ) {
-                Text(when { heading==null -> "Rumbo no disponible · norte arriba"; heading.spread>=100f -> "$compassLabel · brújula imprecisa"; else -> compassLabel },Modifier.padding(horizontal=12.dp,vertical=6.dp),style=MaterialTheme.typography.labelLarge)
+                Text(when { heading==null -> "Rumbo no disponible · norte arriba"; heading.spread>=100f -> "$compassLabel · brújula imprecisa: mové el teléfono en forma de 8"; else -> compassLabel },Modifier.padding(horizontal=12.dp,vertical=6.dp),style=MaterialTheme.typography.labelLarge)
             }
         }
         if (selectingZone && freehand && !moveWhileDrawing && map != null) FreehandZone(map!!,mapView,zoneColor,onSelectionChanged)

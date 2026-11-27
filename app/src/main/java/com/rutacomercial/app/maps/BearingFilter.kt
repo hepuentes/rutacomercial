@@ -29,3 +29,26 @@ internal class BearingFilter {
         return bearing
     }
 }
+
+/**
+ * Learns the compass error from the GPS course while walking. Magnetometers drift near cars,
+ * metal and buildings; the walked direction does not. The learned offset then corrects the
+ * compass when the worker stops and turns the phone toward a street.
+ */
+internal class CompassBias {
+    var offset = 0f; private set
+    var samples = 0; private set
+    private var lastCourse = Float.NaN
+    /** device: compass azimuth; course: direction of travel from successive good GPS fixes. */
+    fun learn(device: Float, course: Float) {
+        if (course == lastCourse) return
+        lastCourse = course
+        val diff = wrap(course - device - offset)
+        // A phone held sideways while walking is not a compass error; ignore big disagreements.
+        if (abs(diff) > 60f) return
+        offset = wrap(offset + diff * if (samples < 3) 0.5f else 0.25f)
+        samples++
+    }
+    fun apply(device: Float) = (device + (if (samples >= 2) offset else 0f) + 360f) % 360f
+    private fun wrap(a: Float) = ((a + 540f) % 360f) - 180f
+}
