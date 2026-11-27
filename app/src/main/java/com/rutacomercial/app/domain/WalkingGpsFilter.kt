@@ -24,6 +24,15 @@ class WalkingGpsFilter {
         if (previous != null) {
             val dt = (fix.elapsedRealtimeNanos - previous.elapsedRealtimeNanos) / 1_000_000
             if (dt <= 0 || fix.at <= previous.at) return GpsDecision(false, "Lectura GPS repetida")
+            // Some phones (battery savers, app cloners, blocked location assistance) deliver readings in bursts.
+            // Throwing away every reading after a pause loses the whole walk, so a precise one that walking
+            // explains becomes the new anchor; across more than 2 minutes it starts a new segment.
+            val reach = Geo.distanceM(previous.latitude, previous.longitude, fix.latitude, fix.longitude) - previous.accuracyMeters - fix.accuracyMeters
+            if (dt in (SIGNAL_GAP_MS + 1)..MAX_BRIDGE_MS && kotlin.math.abs((fix.at - previous.at) - dt) <= 10_000 &&
+                anchor != null && reach / (dt / 1000.0) <= WALK_MAX_MPS) {
+                lastSample = fix; anchor = fix; candidate = null; settling.clear()
+                return GpsDecision(true, "Señal recuperada · punto registrado", dt > BRIDGE_MS)
+            }
             if (dt > SIGNAL_GAP_MS || kotlin.math.abs((fix.at - previous.at) - dt) > 10_000) {
                 reset()
                 lastSample = fix; settling.add(fix)
@@ -85,5 +94,11 @@ class WalkingGpsFilter {
         return GpsDecision(false, if (gap) "Señal GPS insuficiente · tramo interrumpido" else reason, gap)
     }
 
-    companion object { const val SIGNAL_GAP_MS = 30_000L }
+    companion object {
+        const val SIGNAL_GAP_MS = 30_000L
+        /** Up to this pause the straight line counts as walked; longer pauses keep the point but break the line. */
+        const val BRIDGE_MS = 120_000L
+        const val MAX_BRIDGE_MS = 10 * 60_000L
+        const val WALK_MAX_MPS = 2.5
+    }
 }

@@ -28,5 +28,16 @@ internal fun sessionReport(data: DataSnapshot, journey: Journey, sessions: List<
 internal fun JSONObject.withAntiFraud(context: android.content.Context, journeyId: String): JSONObject {
     val ledger = com.rutacomercial.app.tracking.AntiFraudLedger(context)
     com.rutacomercial.app.tracking.AntiFraudLedger.KINDS.forEach { put(it + "Ms", ledger.get(journeyId, it).coerceAtLeast(0)) }
+    com.rutacomercial.app.tracking.AntiFraudLedger.GPS.forEach { put(it, ledger.get(journeyId, it)) }
     return this
+}
+
+/** "312 lecturas · 280 usadas · 25 imprecisas · 4 pausas (máx. 95 s)", or null for reports from older versions. */
+internal fun gpsSummary(report: JSONObject): String? {
+    if (!report.has("gpsFixes")) return null
+    val parts = mutableListOf("${report.optLong("gpsFixes")} lecturas", "${report.optLong("gpsUsed")} usadas")
+    report.optLong("gpsImprecise").takeIf { it > 0 }?.let { parts += "$it imprecisas" }
+    report.optLong("gpsStale").takeIf { it > 0 }?.let { parts += "$it viejas o con hora desfasada" }
+    report.optLong("gpsGaps").takeIf { it > 0 }?.let { parts += "$it pausas de señal (máx. ${report.optLong("gpsMaxGapMs") / 1000} s)" }
+    return parts.joinToString(" · ")
 }
