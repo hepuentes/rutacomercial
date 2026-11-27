@@ -212,6 +212,20 @@ class Repository(val db: AppDatabase) {
         val saved=old.copy(state="PAUSED",activeMs=old.activeDuration(transition),intervalStartedAt=transition,lastAliveAt=transition,nextSegment=old.nextSegment+1)
         dao.putJourney(saved); audit("journey",id,"PAUSE",eventPosition,at=transition); saved
     }
+    /** A ride confirmed after it began: the points recorded since then are not walking, remove them and their distance. */
+    suspend fun discardPointsSince(id:String,since:Long) = db.withTransaction {
+        val journey=dao.journey(id) ?: return@withTransaction
+        val removed=dao.journeyPoints(id).filter { it.at>=since }.sumOf { it.distanceDeltaM }
+        if(dao.deletePointsSince(id,since)>0) dao.putJourney(journey.copy(distanceM=(journey.distanceM-removed).coerceAtLeast(0.0),nextSegment=journey.nextSegment+1))
+    }
+    /** Pause backdated to the last movement: the still minutes become pause, not paid active time. */
+    suspend fun pauseIdle(id:String,movedAt:Long):Journey = db.withTransaction {
+        val old=requireNotNull(dao.journey(id)){"La jornada no existe"}
+        if(old.state!="ACTIVE") return@withTransaction old
+        val transition=maxOf(movedAt,old.intervalStartedAt)
+        val saved=old.copy(state="PAUSED",activeMs=old.activeDuration(transition),intervalStartedAt=transition,lastAliveAt=transition,nextSegment=old.nextSegment+1)
+        dao.putJourney(saved); audit("journey",id,"PAUSE","",at=transition); saved
+    }
     suspend fun resumeJourney(id:String,now:Long=nowMillis(),eventPosition:String=""):Journey = db.withTransaction {
         val old=requireNotNull(dao.journey(id)){"La jornada no existe"}
         if(old.state=="ACTIVE") return@withTransaction old
@@ -226,6 +240,11 @@ class Repository(val db: AppDatabase) {
         val transition=maxOf(now,old.intervalStartedAt,old.lastAliveAt)
         val saved=old.copy(state="FINISHED",endedAt=transition,activeMs=old.activeDuration(transition),pausedMs=old.pauseDuration(transition),intervalStartedAt=transition,lastAliveAt=transition)
         dao.putJourney(saved); audit("journey",id,"FINISH",eventPosition,at=transition); saved
+    }
+    /** The phone's hour went back: forget the "alive" mark set with the wrong hour, or a pause would keep it as active time. */
+    suspend fun clockCorrected(id:String,now:Long=nowMillis()) = db.withTransaction {
+        val journey=dao.journey(id) ?: return@withTransaction
+        if(journey.state=="ACTIVE") dao.putJourney(journey.copy(lastAliveAt=maxOf(now,journey.intervalStartedAt)))
     }
     suspend fun heartbeat(id:String,now:Long=nowMillis()) = db.withTransaction {
         val journey=dao.journey(id) ?: return@withTransaction

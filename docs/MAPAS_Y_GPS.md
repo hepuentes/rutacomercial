@@ -82,7 +82,9 @@ En Opciones de ambas apps, **Mapa oscuro** cambia al estilo oscuro de OpenFreeMa
 
 - **Notificación del recorrido:** visible en la pantalla de bloqueo con Pausar y Terminar; Terminar pide confirmación. En pausa ofrece Reanudar.
 - **Llegaste:** dentro de la zona el botón dice "Llegaste · Iniciar recorrido" y el teléfono vibra.
-- **Avisos de zona:** si salís de la zona más de un minuto, vibra y avisa; al volver, el aviso se borra. Al llegar al 90 % de cobertura avisa "Zona casi completa".
+- **Avisos de zona:** los primeros 40 m fuera del borde cuentan como dentro (error del GPS, avenidas anchas, bordes trazados a mano). Más allá, avisa a los 3 minutos; si te alejás más de 250 m, a los 45 segundos. Al volver, el aviso se borra. Al llegar al 90 % de cobertura avisa "Zona casi completa".
+- **Seguir fuera de la zona:** el aviso y el mapa ofrecen "Seguir fuera" o "Volver a la zona". Si elegís seguir, no vuelve a avisar en esa jornada, queda registrado en el recorrido y el Owner recibe un aviso y te ve "fuera de zona" en Hoy. Al terminar podés proponer lo recorrido afuera como zona, con el borde ya dibujado.
+- **Pausa por inactividad:** si no te movés más de 25 m durante 20 minutos, el recorrido se pausa solo y ese tiempo quieto no cuenta como activo.
 - **Guía por calles:** para llegar al primer tramo pendiente o pasar de uno a otro, la Guía camina por las calles ("Pasá por … · sin repartir"), nunca en línea recta.
 - **Mapa sin conexión automático:** con Wi-Fi, el Repartidor guarda el mapa de cada zona aceptada y el Owner, el de sus zonas activas (hasta 1 km).
 - **Zonas superpuestas:** al guardar una zona que comparte 15 % o más con otra, el Owner recibe un aviso.

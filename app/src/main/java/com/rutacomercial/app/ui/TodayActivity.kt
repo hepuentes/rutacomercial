@@ -19,13 +19,15 @@ import java.time.ZoneId
 
 /** One worker as the Owner sees them today: last known place and how fresh it is. */
 internal data class WorkerToday(val worker: String, val zone: String, val state: String, val meters: Double,
-    val updated: Long, val last: MapCoordinate?, val lines: List<MapTrack>, val activeMs: Long = 0, val zones: Int = 1)
+    val updated: Long, val last: MapCoordinate?, val lines: List<MapTrack>, val activeMs: Long = 0, val zones: Int = 1,
+    val outside: Boolean = false)
 
 /** ACTIVE without news for 5 minutes reads as no signal: the phone sends about once a minute. */
-internal fun todayState(state: String, updated: Long, now: Long): String = when {
+internal fun todayState(state: String, updated: Long, now: Long, outside: Boolean = false): String = when {
     state == "FINISHED" -> "terminó"
     state == "PAUSED" -> "en pausa"
     now - updated > 5 * 60_000L -> "sin señal"
+    outside -> "fuera de zona"
     else -> "recorriendo"
 }
 
@@ -34,7 +36,7 @@ internal fun workersToday(reports: List<WorkReport>, since: Long): List<WorkerTo
         val latest = mine.maxBy { it.updated }
         WorkerToday(latest.worker, latest.name, latest.state, mine.sumOf { it.meters }, latest.updated,
             latest.lines.lastOrNull { it.points.isNotEmpty() }?.points?.last(), mine.flatMap { it.lines },
-            mine.sumOf { it.duration }, mine.map { it.taskId }.distinct().size)
+            mine.sumOf { it.duration }, mine.map { it.taskId }.distinct().size, latest.outside)
     }.sortedByDescending { it.updated }
 
 /** Plain text for WhatsApp or the end-of-day notice. */
@@ -43,7 +45,7 @@ internal fun daySummary(workers: List<WorkerToday>): String = if (workers.isEmpt
         "• ${w.worker}: ${number(w.meters / 1000, 2)} km · ${hours(w.activeMs)} · ${w.zones} ${if (w.zones == 1) "zona" else "zonas"}"
     } + "\nTotal: ${number(workers.sumOf { it.meters } / 1000, 2)} km"
 
-private val stateColors = mapOf("recorriendo" to "#1B6B3A", "en pausa" to "#9A5B00", "sin señal" to "#B3261E", "terminó" to "#5F6B73")
+private val stateColors = mapOf("recorriendo" to "#1B6B3A", "fuera de zona" to "#7A4FB5", "en pausa" to "#9A5B00", "sin señal" to "#B3261E", "terminó" to "#5F6B73")
 
 class TodayActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -83,7 +85,7 @@ private fun TodayScreen(close: () -> Unit) {
         }
         TerritoryMap(Modifier.fillMaxWidth().weight(1f), tracks = workers.flatMap { it.lines }, sectors = zones,
             businesses = workers.mapNotNull { w ->
-                val state = todayState(w.state, w.updated, now)
+                val state = todayState(w.state, w.updated, now, w.outside)
                 w.last?.let { MapBusiness("today-" + w.worker, w.worker + " · " + state, it.latitude, it.longitude, stateColors.getValue(state)) }
             },
             fitArea = if (follow && center == null) workers.flatMap { w -> w.lines.flatMap { it.points } } else emptyList(),
@@ -91,7 +93,7 @@ private fun TodayScreen(close: () -> Unit) {
         if (!follow) TextButton(onClick = { follow = true; center = null }) { Text("Seguir a todos") }
         Column(Modifier.fillMaxWidth().heightIn(max = 220.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             workers.forEach { w ->
-                val state = todayState(w.state, w.updated, now)
+                val state = todayState(w.state, w.updated, now, w.outside)
                 val minutes = ((now - w.updated) / 60_000).coerceAtLeast(0)
                 Surface(onClick = { w.last?.let { follow = false; center = it; request++ } }, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceVariant) {
                     Row(Modifier.fillMaxWidth().padding(10.dp), verticalAlignment = Alignment.CenterVertically) {

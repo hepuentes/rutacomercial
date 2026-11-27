@@ -49,6 +49,8 @@ data class TrackingStatus(
     val provider: String = "",
     val isLocating: Boolean = false,
     val locationProblem: String? = null,
+    /** Zone name while the worker is outside it past the tolerance and has not chosen to continue. */
+    val outsideZone: String? = null,
     val message: String = "GPS detenido. Iniciá una jornada para registrar el recorrido.",
 )
 
@@ -71,6 +73,7 @@ object TrackingController {
     fun resume(context: Context) = command(context, TrackingService.RESUME, true)
     fun pause(context: Context) = command(context, TrackingService.PAUSE, false)
     fun finish(context: Context) = command(context, TrackingService.FINISH, false)
+    fun continueOutside(context: Context) = command(context, TrackingService.OUTSIDE_OK, false)
 
     private fun command(context: Context, action: String, foreground: Boolean, at: Long = System.currentTimeMillis(), anchor: MapCoordinate? = null) {
         if (foreground && (!hasLocationPermission(context) || !hasNotificationPermission(context))) {
@@ -164,7 +167,17 @@ class TrackingService : Service(), LocationListener {
                         if (!TrackingController.hasLocationPermission(this@TrackingService)) pauseForProblem("Permiso de ubicación revocado. Jornada pausada.", "PERMISSION_REVOKED")
                         else if (!TrackingController.hasNotificationPermission(this@TrackingService)) pauseForProblem("Notificaciones desactivadas. Jornada pausada para mantener el seguimiento visible.", "NOTIFICATION_DISABLED")
                         else if (!manager.isProviderEnabled(LocationManager.GPS_PROVIDER)) pauseForProblem("Ubicación desactivada en Android. Jornada pausada.", "GPS_DISABLED")
+                        else if (idle.shouldPause(android.os.SystemClock.elapsedRealtime())) pauseIdle()
+                        else if (vehicle.startedAt?.let { System.currentTimeMillis() - it >= 5 * 60_000L } == true) pauseVehicle(vehicle.startedAt!!)
                         else try {
+                            // A wall clock moved by hand would add active time: measure the jump and leave it unpaid.
+                            val jump = clock.check(System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime())
+                            if (jump != 0L) repository.currentJourney()?.let { j ->
+                                ledger.addClock(j.id, jump)
+                                if (jump < 0) repository.clockCorrected(j.id)
+                                repository.addIncident("La hora del teléfono se " + (if (jump > 0) "adelantó" else "atrasó") + " ${kotlin.math.abs(jump) / 60_000} min" +
+                                    (if (jump > 0) ": ese salto no se paga." else ": se compensa con el adelanto anterior, si lo hubo."), j.id, "CLOCK_CHANGE")
+                            }
                             repository.currentJourney()?.let { repository.heartbeat(it.id) }
                             if (android.os.SystemClock.elapsedRealtime() - lastFixElapsed > WalkingGpsFilter.SIGNAL_GAP_MS) TrackingRuntime.mutable.update { it.copy(message = "Sin ubicación precisa reciente · esperando señal GPS") }
                         } catch (_: Exception) { pauseForProblem("No se pudo guardar el recorrido. Revisá el almacenamiento.", "STORAGE_ERROR") }
@@ -195,6 +208,10 @@ class TrackingService : Service(), LocationListener {
                 stopSelf(startId)
                 return START_NOT_STICKY
             }
+        } else if (action == OUTSIDE_OK) {
+            scope.launch { serial.withLock { runCatching { zoneAlerts.acceptOutside() } } }
+            if (!foreground) stopSelf(startId)
+            return START_NOT_STICKY
         } else if (action == ASK_FINISH) {
             // Lock-screen finish needs a second tap; a pocket tap must never close the day.
             getSystemService(NotificationManager::class.java).notify(if (foreground) NOTIFICATION_ID else PAUSED_ID, notification(confirm = true, paused = !foreground))
@@ -239,6 +256,8 @@ class TrackingService : Service(), LocationListener {
                             if (requestedGeneration == commandGeneration) startListening()
                         }
                         PAUSE -> {
+                            closeOpenIntervals(requestedAt)
+                            TrackingRuntime.mutable.update { it.copy(outsideZone = null) }
                             repository.currentJourney()?.let { repository.pauseJourney(it.id, requestedAt,eventPosition)
                                 getSystemService(NotificationManager::class.java).notify(PAUSED_ID, notification(paused = true)) }
                             (application as? com.rutacomercial.app.RutaApplication)?.cloud?.scheduleDelivery()
@@ -246,6 +265,8 @@ class TrackingService : Service(), LocationListener {
                             if (requestedGeneration == commandGeneration) finishService()
                         }
                         FINISH -> {
+                            closeOpenIntervals(requestedAt)
+                            TrackingRuntime.mutable.update { it.copy(outsideZone = null) }
                             getSystemService(NotificationManager::class.java).cancel(PAUSED_ID)
                             repository.currentJourney()?.let { repository.finishJourney(it.id, requestedAt,eventPosition) }
                             (application as? com.rutacomercial.app.RutaApplication)?.cloud?.scheduleDelivery()
@@ -270,6 +291,8 @@ class TrackingService : Service(), LocationListener {
         walkingFilter.reset()
         generation++
         lastFixElapsed = android.os.SystemClock.elapsedRealtime()
+        idle.start(System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime())
+        vehicle.reset(); clock.start(System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime()); mockSince = null
         requestedAfterNanos = android.os.SystemClock.elapsedRealtimeNanos()
         TrackingRuntime.mutable.update { it.copy(isTracking = true, isLocating = false, locationProblem = null, provider = "", message = "Comprobando ubicación · esperá unos segundos") }
         val token = generation
@@ -287,7 +310,59 @@ class TrackingService : Service(), LocationListener {
         TrackingRuntime.mutable.update { it.copy(isTracking = false) }
     }
 
+    private val idle = IdleWatch()
+    private val vehicle = com.rutacomercial.app.domain.VehicleWatch()
+    private val clock = com.rutacomercial.app.domain.ClockWatch()
+    private val ledger by lazy { AntiFraudLedger(this) }
+    private var mockSince: Long? = null
+
+    /** Closes a ride, a simulated-location stretch or an unanswered exit that is still open at pause or finish. */
+    private suspend fun closeOpenIntervals(now: Long) {
+        val id = repository.currentJourney()?.id ?: return
+        vehicle.startedAt?.let { ledger.add(id, AntiFraudLedger.VEHICLE, now - it) }
+        vehicle.reset()
+        mockSince?.let { ledger.add(id, AntiFraudLedger.MOCK, now - it) }
+        mockSince = null
+        runCatching { zoneAlerts.flush(now) }
+    }
+
+    /** More than 5 minutes riding: pause backdated to the start of the ride, so none of it is paid. */
+    private suspend fun pauseVehicle(rideStart: Long) {
+        stopListening()
+        val message = "Pausamos: ibas en vehículo más de 5 minutos. El reparto es a pie y ese tramo no se cuenta. Tocá Reanudar al volver a caminar."
+        runCatching {
+            repository.currentJourney()?.let {
+                mockSince?.let { m -> ledger.add(it.id, AntiFraudLedger.MOCK, System.currentTimeMillis() - m) }; mockSince = null
+                runCatching { zoneAlerts.flush(rideStart) }
+                repository.pauseIdle(it.id, rideStart)
+                repository.addIncident(message, it.id, "VEHICLE_PAUSE")
+            }
+        }
+        vehicle.reset()
+        TrackingRuntime.mutable.update { it.copy(message = message, outsideZone = null) }
+        getSystemService(NotificationManager::class.java).notify(PAUSED_ID, notification(paused = true))
+        (application as? com.rutacomercial.app.RutaApplication)?.cloud?.scheduleDelivery()
+        finishService()
+    }
+
+    private suspend fun pauseIdle() {
+        closeOpenIntervals(idle.lastMovedAt)
+        stopListening()
+        val message = "Pausamos tu recorrido: 20 minutos sin moverte. Ese tiempo no se cuenta. Tocá Reanudar para seguir."
+        runCatching {
+            repository.currentJourney()?.let {
+                repository.pauseIdle(it.id, idle.lastMovedAt)
+                repository.addIncident(message, it.id, "IDLE_PAUSE")
+            }
+        }
+        TrackingRuntime.mutable.update { it.copy(message = message, outsideZone = null) }
+        getSystemService(NotificationManager::class.java).notify(PAUSED_ID, notification(paused = true))
+        (application as? com.rutacomercial.app.RutaApplication)?.cloud?.scheduleDelivery()
+        finishService()
+    }
+
     private suspend fun pauseForProblem(message: String, kind: String) {
+        closeOpenIntervals(System.currentTimeMillis())
         stopListening()
         runCatching {
             repository.currentJourney()?.let {
@@ -321,6 +396,22 @@ class TrackingService : Service(), LocationListener {
                     if (LocationPreview.usable(location)) TrackingRuntime.mutable.update {
                         it.copy(position = MapCoordinate(fix.latitude, fix.longitude), accuracyMeters = fix.accuracyMeters, fixAt = fix.at, locationProblem = null)
                     }
+                    repository.currentJourney()?.id?.let { journeyId ->
+                        if (fix.isMock) {
+                            if (mockSince == null) { mockSince = fix.at
+                                repository.addIncident("Ubicación simulada (app de GPS falso): este tramo no se registra ni se paga.", journeyId, "MOCK_LOCATION") }
+                        } else mockSince?.let { ledger.add(journeyId, AntiFraudLedger.MOCK, fix.at - it); mockSince = null }
+                        val rideStart = vehicle.startedAt
+                        when (vehicle.accept(fix)) {
+                            "start" -> {
+                                vehicle.startedAt?.let { repository.discardPointsSince(journeyId, it) }
+                                repository.addIncident("Tramo en vehículo: no suma km ni tiempo pagable.", journeyId, "VEHICLE")
+                                TrackingRuntime.mutable.update { it.copy(message = "Vas en vehículo · este tramo no se cuenta") }
+                            }
+                            "end" -> if (rideStart != null) ledger.add(journeyId, AntiFraudLedger.VEHICLE, vehicle.endedAt - rideStart)
+                        }
+                        if (fix.isMock || vehicle.active) return@withLock
+                    }
                     observations.accept(fix)?.let { kind ->
                         val journeyId=repository.currentJourney()?.id
                         if(journeyId!=null) {
@@ -345,6 +436,7 @@ class TrackingService : Service(), LocationListener {
                     }
                     val result = repository.recordLocation(fix, signalContinuous = !filtered.breakSegment)
                     if (result.accepted) {
+                        idle.moved(fix.latitude, fix.longitude, fix.at, fix.elapsedRealtimeNanos / 1_000_000)
                         runCatching { zoneAlerts.check(fix.latitude, fix.longitude, System.currentTimeMillis()) }
                         lastFixElapsed = android.os.SystemClock.elapsedRealtime()
                         TrackingRuntime.mutable.update { it.copy(position = MapCoordinate(fix.latitude, fix.longitude), accuracyMeters = fix.accuracyMeters,
@@ -403,6 +495,7 @@ class TrackingService : Service(), LocationListener {
         const val RESUME = "com.rutacomercial.RESUME"
         const val FINISH = "com.rutacomercial.FINISH"
         const val ASK_FINISH = "com.rutacomercial.ASK_FINISH"
+        const val OUTSIDE_OK = "com.rutacomercial.OUTSIDE_OK"
         const val KEEP = "com.rutacomercial.KEEP"
         private const val PAUSED_ID = 2402
         internal const val CHANNEL = "journey_tracking_v2"

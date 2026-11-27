@@ -15,11 +15,18 @@ internal fun sessionReport(data: DataSnapshot, journey: Journey, sessions: List<
             .put("kmh",ordered.drop(1).sumOf { it.distanceDeltaM }*3.6/seconds))
     }
     val observations=JSONArray()
-    data.incidents.filter { it.journeyId==journey.id && it.kind in setOf("FAST_INTERVAL","WALK_STOP","GPS","GPS_DISABLED","LOCATION_UNAVAILABLE") }.forEach {
+    data.incidents.filter { it.journeyId==journey.id && it.kind in setOf("FAST_INTERVAL","WALK_STOP","GPS","GPS_DISABLED","LOCATION_UNAVAILABLE","OUTSIDE_ZONE","OUTSIDE_OK","IDLE_PAUSE","VEHICLE","VEHICLE_PAUSE","MOCK_LOCATION","CLOCK_CHANGE") }.forEach {
         observations.put(JSONObject().put("kind",it.kind).put("at",it.at))
     }
     val reportKey=if(journey.id==sessions.firstOrNull()) id else journey.id
     return JSONObject().put("assignmentId",id).put("state",journey.state)
         .put("capturedAt",System.currentTimeMillis()).put("startedAt",journey.startedAt).put("worker",zone.optString("worker")).put("name",zone.optString("name"))
         .put("speedSegments",speeds).put("observations",observations).put("version",1).put("kind","result").put("id",reportKey).put("meters",journey.distanceM).put("duration",journey.activeDuration(System.currentTimeMillis())).put("segments",segments).put("events",encodedMarks(journeyMarks(data,journey.id)))
+}
+
+/** Unpaid and informative times of a journey, so the Owner sees exactly what the worker sees. */
+internal fun JSONObject.withAntiFraud(context: android.content.Context, journeyId: String): JSONObject {
+    val ledger = com.rutacomercial.app.tracking.AntiFraudLedger(context)
+    com.rutacomercial.app.tracking.AntiFraudLedger.KINDS.forEach { put(it + "Ms", ledger.get(journeyId, it).coerceAtLeast(0)) }
+    return this
 }

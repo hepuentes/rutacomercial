@@ -12,6 +12,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -116,6 +117,7 @@ class AssignmentActivity : TrackingMapActivity() {
         var msg by remember { mutableStateOf("") }
         var loading by remember { mutableStateOf(intent.data!=null || intent.action==Intent.ACTION_SEND) }
         var drawingProposal by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
+        var suggestedOutline by remember { mutableStateOf(emptyList<MapCoordinate>()) }
         var incoming by remember { mutableStateOf<JSONObject?>(null) }
         val cloud = (application as RutaApplication).cloud
         val onlineRevision by cloud.revision.collectAsStateWithLifecycle()
@@ -124,6 +126,16 @@ class AssignmentActivity : TrackingMapActivity() {
         val pendingOnline = remember(onlineRevision) { cloud.pending() }
         val zone=remember(id,revision) { id?.let { read(it,"task") } }
         val work=zoneWork(revision)
+        val pay=remember { PayBook(prefs) }
+        val ledger=remember { com.rutacomercial.app.tracking.AntiFraudLedger(this) }
+        fun unpaidNote(j:Journey)=unpaidText(j.activeDuration(System.currentTimeMillis()),
+            ledger.get(j.id,"vehicle"),ledger.get(j.id,"mock"),ledger.clock(j.id))
+        var explainTime by remember { mutableStateOf<String?>(null) }
+        explainTime?.let { pending -> HowTimeCounts(onDismiss={
+            prefs.edit().putBoolean("explainedTime",true).apply(); explainTime=null
+            if(pending=="start") action("start")
+        },confirm=if(pending=="start") "Entendido · iniciar" else "Entendido") }
+        var payTick by remember { mutableIntStateOf(0) }
         val taskReports=remember(work,id) { work.reports.filter { it.taskId==id } }
         val result=remember(id,revision,taskReports) { (taskReports.firstOrNull()?.id ?: id)?.let { read(it,"result") ?: read(it,"received")?.takeIf { doc -> doc.optString("kind")=="result" } } }
         val ids=remember(revision) { directory.listFiles().orEmpty().filter { it.extension=="task" }.sortedByDescending { it.lastModified() }.map { it.nameWithoutExtension } }
@@ -306,7 +318,7 @@ class AssignmentActivity : TrackingMapActivity() {
                         .onSuccess { msg="Propuesta enviada. Te avisamos cuando el Owner la acepte.";drawingProposal=false;referenceLat=null;referenceLon=null }
                         .onFailure { android.widget.Toast.makeText(this,"No se pudo enviar la propuesta.",android.widget.Toast.LENGTH_LONG).show() }
                     else runCatching { share(doc) }.onFailure { android.widget.Toast.makeText(this,"No se pudo compartir la propuesta.",android.widget.Toast.LENGTH_LONG).show() }
-                },onClose={drawingProposal=false;referenceLat=null;referenceLon=null})
+                },onClose={drawingProposal=false;referenceLat=null;referenceLon=null;suggestedOutline=emptyList()},suggested=suggestedOutline)
             return
         }
         Column(Modifier.fillMaxSize().systemBarsPadding().then(if((worker || reportId!=null) && incoming==null) Modifier else Modifier.verticalScroll(rememberScrollState())).padding(8.dp),verticalArrangement=Arrangement.spacedBy(5.dp)) {
@@ -352,6 +364,7 @@ class AssignmentActivity : TrackingMapActivity() {
                     var zoneTitle by androidx.compose.runtime.saveable.rememberSaveable(proposal) { mutableStateOf(existing?.optString("name") ?: obj.getString("name")) }
                     var saving by remember(obj) { mutableStateOf(false) }
                     Text("Propuesta de "+obj.getString("worker"))
+                    if(pay.hourlyRate>0) Text("Al aceptarla, la tarea sale con "+money(pay.hourlyRate)+" por hora.",style=MaterialTheme.typography.bodySmall)
                     TerritoryMap(Modifier.fillMaxWidth().mapHeight(.55f),sectors=listOf(MapSector(zoneKey,zoneTitle,"#087F75",contour,true)),fitArea=contour)
                     if(existing==null) Field("Nombre de la zona",zoneTitle,{zoneTitle=it.take(200)})
                     else Text("Tarea guardada · "+existing.getString("name"))
@@ -369,7 +382,7 @@ class AssignmentActivity : TrackingMapActivity() {
                                         }
                                     }
                                 }
-                                prefs.edit().putBoolean("owner:"+taskKey,true).apply()
+                                prefs.edit().putBoolean("owner:"+taskKey,true).apply();pay.stamp(taskKey)
                                 id=taskKey;reportId=null;incoming=null;revision++;setIntent(Intent())
                                 val phone=cloud.proposer(proposal)
                                 if(phone!=null) { cloud.assign(task,phone);msg="Zona guardada. La tarea se envió en línea a "+obj.getString("worker")+"." }
@@ -599,13 +612,13 @@ class AssignmentActivity : TrackingMapActivity() {
                     tracking.locationProblem?.let { Text(it,style=MaterialTheme.typography.bodySmall) }
                     fun sendReport(journey:Journey) {
                         runCatching {
-                            val doc=sessionReport(data,journey,sessions,zone)
+                            val doc=sessionReport(data,journey,sessions,zone).withAntiFraud(this@AssignmentActivity,journey.id)
                             val prior=JSONArray()
                             var bytes=doc.toString().toByteArray().size+64
                             val byId=data.journeys.associateBy { it.id }
                             for(key in sessions.takeWhile { it!=journey.id }.asReversed()) {
                                 val earlier=byId[key] ?: continue
-                                val entry=sessionReport(data,earlier,sessions,zone)
+                                val entry=sessionReport(data,earlier,sessions,zone).withAntiFraud(this@AssignmentActivity,earlier.id)
                                 val size=entry.toString().toByteArray().size+1
                                 if(bytes+size>5_000_000) {
                                     android.widget.Toast.makeText(this@AssignmentActivity,"Las jornadas más antiguas se pueden enviar desde Historial.",android.widget.Toast.LENGTH_LONG).show()
@@ -637,6 +650,7 @@ class AssignmentActivity : TrackingMapActivity() {
                             TextButton(onClick={options=false;nav.startZone(zone.optString("name"),polygon)}) { Text("Cómo llegar a la zona") }
                             TextButton(onClick={options=false;nav.search=true}) { Text("Buscar un lugar") }
                             TextButton(onClick={options=false;drawingProposal=true}) { Text("Proponer zona") }
+                            TextButton(onClick={options=false;explainTime="info"}) { Text("Cómo se cuenta mi tiempo") }
                             DarkMapSwitch()
                             TextButton(onClick={options=false;sharedText=""}) { Text("Traer ubicación de Google Maps") }
                             TextButton(onClick={options=false;consultGoogleMap(this@AssignmentActivity,position ?: polygon.firstOrNull())}) { Text("Consultar en Google Maps") }
@@ -651,17 +665,31 @@ class AssignmentActivity : TrackingMapActivity() {
                             Text("Pedile al Owner que vuelva a compartir esta tarea para vincularla.")
                         journey==null -> {
                             // Arriving is the moment to start: the button says so and the phone buzzes once.
-                            val arrived=position!=null && boundaryPoint==null
+                            val arrived=position!=null && com.rutacomercial.app.tracking.ZoneWatch.outsideMeters(
+                                polygon.map { it.latitude to it.longitude },position.latitude,position.longitude)<=40.0
                             val ctx=androidx.compose.ui.platform.LocalContext.current
                             LaunchedEffect(arrived) { if(arrived) runCatching { ctx.getSystemService(android.os.Vibrator::class.java)?.vibrate(android.os.VibrationEffect.createOneShot(250,android.os.VibrationEffect.DEFAULT_AMPLITUDE)) } }
-                            Button(onClick={prefs.edit().putString("selected",id).commit();action("start")},modifier=Modifier.fillMaxWidth().heightIn(min=64.dp),
+                            Button(onClick={prefs.edit().putString("selected",id).commit()
+                                    if(prefs.getBoolean("explainedTime",false)) action("start") else explainTime="start" },modifier=Modifier.fillMaxWidth().heightIn(min=64.dp),
                                 colors=if(arrived) ButtonDefaults.buttonColors(containerColor=androidx.compose.ui.graphics.Color(0xFF1B6B3A)) else ButtonDefaults.buttonColors()) {
                                 Text(if(arrived) "Llegaste · Iniciar recorrido" else "Iniciar recorrido",fontSize=20.sp)
                             }
                         }
                         journey.state=="FINISHED" -> {
+                            // Worked outside the zone by choice: offer that walk as a zone for the Owner to approve.
+                            if(data.incidents.any { it.journeyId==journey.id && it.kind=="OUTSIDE_OK" }) {
+                                // Only what was walked outside the zone (past the 40 m tolerance) becomes the proposal.
+                                val walked=remember(journey.id,data.points.size) {
+                                    val ring=polygon.map { it.latitude to it.longitude }
+                                    trackOutline(mapTracks(data,journey.id).flatMap { it.points }
+                                        .filter { com.rutacomercial.app.tracking.ZoneWatch.outsideMeters(ring,it.latitude,it.longitude)>40.0 })
+                                }
+                                if(walked.size>=3) OutlinedButton(onClick={ suggestedOutline=walked;drawingProposal=true },modifier=Modifier.fillMaxWidth()) {
+                                    Text("Proponer lo recorrido fuera como zona") }
+                            }
                             WorkerFinishedPanel(journey,if(cloud.onlineTask(zone.getString("id"))) workerSyncText(cloud.delivered(journey.id,journey.state),true) else null,
-                                onNewDay=if(busyJourney==null && trustedZone && historyJourney==null) ({ confirmNew=true }) else null,onShare={sendReport(journey)})
+                                onNewDay=if(busyJourney==null && trustedZone && historyJourney==null) ({ confirmNew=true }) else null,onShare={sendReport(journey)},
+                                unpaidNote=unpaidNote(journey))
                             if(busyJourney==null && trustedZone) {
                                 if(confirmNew) AlertDialog(onDismissRequest={confirmNew=false},title={Text("¿Iniciar otra jornada?")},
                                     text={Text("El recorrido anterior queda guardado con sus marcas. El tiempo y la distancia de la nueva jornada empiezan en cero.")},
@@ -674,9 +702,24 @@ class AssignmentActivity : TrackingMapActivity() {
                                 }) { Text("Iniciar jornada") }})
                             }
                         }
-                        else -> WorkerJourneyPanel(journey,tracking.message,if(cloud.onlineTask(zone.getString("id"))) workerSyncText(cloud.deliveredRecently(journey.id,journey.state),false) else null,
+                        else -> {
+                            // Outside past the tolerance: say it plainly and let the worker decide.
+                            tracking.outsideZone?.let { zoneName ->
+                                Surface(shape=MaterialTheme.shapes.large,color=MaterialTheme.colorScheme.tertiaryContainer) {
+                                    Column(Modifier.fillMaxWidth().padding(12.dp),verticalArrangement=Arrangement.spacedBy(6.dp)) {
+                                        Text("Estás fuera de $zoneName",style=MaterialTheme.typography.titleMedium)
+                                        Text("Si elegiste otra parte, seguí: tu Owner lo va a ver en el recorrido.",style=MaterialTheme.typography.bodySmall)
+                                        Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                                            OutlinedButton(onClick={ nav.startZone(zone.optString("name"),polygon) },modifier=Modifier.weight(1f).heightIn(min=52.dp)) { Text("Volver a la zona") }
+                                            Button(onClick={ TrackingController.continueOutside(this@AssignmentActivity) },modifier=Modifier.weight(1f).heightIn(min=52.dp)) { Text("Seguir fuera") }
+                                        }
+                                    }
+                                }
+                            }
+                            WorkerJourneyPanel(journey,tracking.message,if(cloud.onlineTask(zone.getString("id"))) workerSyncText(cloud.deliveredRecently(journey.id,journey.state),false) else null,
                             onPause={TrackingController.pause(this@AssignmentActivity)},onResume={action("resume")},
-                            onFinish={TrackingController.finish(this@AssignmentActivity)})
+                            onFinish={TrackingController.finish(this@AssignmentActivity)},unpaidNote=unpaidNote(journey))
+                        }
                     }
                 } else {
                     val online=cloud.enabled && cloud.sentOnline(zone.getString("id"))
@@ -693,7 +736,7 @@ class AssignmentActivity : TrackingMapActivity() {
                                 others.forEach { (name,phone) -> Button(modifier=Modifier.fillMaxWidth(),onClick={
                                     reassign=false
                                     runCatching { val signed=signedTask(buildTask(sectorOfTask,name,zone.optString("note")))
-                                        prefs.edit().putBoolean("owner:"+signed.getString("id"),true).commit()
+                                        prefs.edit().putBoolean("owner:"+signed.getString("id"),true).commit();pay.stamp(signed.getString("id"))
                                         cloud.assign(signed,phone); id=signed.getString("id"); revision++
                                         msg="Zona reasignada a $name. Le aparece en su app en unos segundos." }
                                         .onFailure { msg=it.localizedMessage ?: "No se pudo reasignar." }
@@ -711,6 +754,41 @@ class AssignmentActivity : TrackingMapActivity() {
                                 .onFailure { msg=it.localizedMessage?.takeIf { m->m.isNotBlank() } ?: "No se pudo enviar la tarea." }
                         }) { Text("Enviar tarea en línea") }
                     }
+                    val due=remember(work,payTick,id) { dues(listOfNotNull(work.tasks.find { it.id==id }),work.reports,pay::rate,pay::paidAt).firstOrNull() }
+                    var editRate by remember(id) { mutableStateOf(false) }
+                    Surface(shape=MaterialTheme.shapes.medium,color=MaterialTheme.colorScheme.surfaceVariant) {
+                        Column(Modifier.fillMaxWidth().padding(12.dp),verticalArrangement=Arrangement.spacedBy(4.dp)) {
+                            Text("Pago",style=MaterialTheme.typography.titleSmall)
+                            when {
+                                pay.rate(id!!)<=0 -> TextButton(onClick={editRate=true}) { Text("Definir valor de la hora") }
+                                due==null -> Text("${money(pay.rate(id!!))} por hora · todavía sin tiempo registrado",style=MaterialTheme.typography.bodySmall)
+                                else -> {
+                                    if(due.unpaidMs>0) {
+                                        Text("${hours(due.activeMs)} activos",style=MaterialTheme.typography.bodySmall)
+                                        if(due.vehicleMs>0) Text("− ${minutes(due.vehicleMs)} en vehículo",style=MaterialTheme.typography.bodySmall)
+                                        if(due.mockMs>0) Text("− ${minutes(due.mockMs)} con ubicación simulada",style=MaterialTheme.typography.bodySmall)
+                                        if(due.clockMs>0) Text("− ${minutes(due.clockMs)} por hora del teléfono adelantada",style=MaterialTheme.typography.bodySmall)
+                                    }
+                                    Text("${hours(due.payableMs)} pagables × ${money(due.rate)} por hora",style=MaterialTheme.typography.bodySmall)
+                                    Text(money(due.amount)+if(due.finished) "" else " · a la fecha",style=MaterialTheme.typography.headlineSmall)
+                                    Row(Modifier.fillMaxWidth().heightIn(min=48.dp).toggleable(value=due.paidAt!=null,role=androidx.compose.ui.semantics.Role.Switch) {
+                                        pay.setPaid(id!!,it);payTick++ },verticalAlignment=Alignment.CenterVertically) {
+                                        Switch(due.paidAt!=null,null)
+                                        Text(if(due.paidAt!=null) "Pagado · "+java.text.SimpleDateFormat("dd/MM/yyyy",java.util.Locale.ROOT).format(java.util.Date(due.paidAt)) else "Pendiente de pago",Modifier.padding(start=8.dp))
+                                    }
+                                    if(due.outsideMs>0) Text("Fuera de la zona sin avisar: ${minutes(due.outsideMs)} (no se descuenta)",style=MaterialTheme.typography.bodySmall)
+                                    TextButton(onClick={editRate=true}) { Text("Cambiar valor de la hora") }
+                                }
+                            }
+                        }
+                    }
+                    if(editRate) {
+                        var text by remember { mutableStateOf(pay.rate(id!!).takeIf { it>0 }?.toString().orEmpty()) }
+                        AlertDialog(onDismissRequest={editRate=false},title={Text("Valor de la hora · "+zone.optString("worker"))},text={
+                            Field("Valor por hora",text,{ text=it.filter { c->c.isDigit() }.take(9) },numeric=true)
+                        },dismissButton={TextButton(onClick={editRate=false}) { Text("Cancelar") }},
+                        confirmButton={Button(onClick={ pay.setRate(id!!,parseRate(text));editRate=false;payTick++ }) { Text("Guardar") }})
+                    }
                     if(!online) {
                         Button(onClick={runCatching { share(signedTask(zone)) }.onFailure { msg="No se pudo firmar o compartir la tarea." }}) { Text("Compartir tarea por archivo") }
                         FilledTonalButton(onClick={runCatching { qrTask=signedTask(zone) }.onFailure { msg="No se pudo preparar la vinculación." }}) { Text("QR y código de tarea") }
@@ -722,6 +800,28 @@ class AssignmentActivity : TrackingMapActivity() {
                             FilledTonalButton(onClick={singleReport=true;reportId=entry.id}) { Text(dateText(entry.at)+" · "+if(entry.state=="FINISHED") "Ver informe" else "Ver avance") }
                         }
                     } else Text("Pendiente de recibir informe")
+                }
+            }
+            if(!worker && id==null && incoming==null) {
+                val owed=remember(work,payTick,revision) {
+                    dues(work.tasks,work.reports,pay::rate,pay::paidAt).filter { it.finished && it.paidAt==null && it.amount>0 }.groupBy { it.worker.trim() }
+                }
+                var payWorker by remember { mutableStateOf<String?>(null) }
+                if(owed.isNotEmpty()) Surface(shape=MaterialTheme.shapes.medium,color=MaterialTheme.colorScheme.secondaryContainer) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp),verticalArrangement=Arrangement.spacedBy(2.dp)) {
+                        Text("Por pagar · "+money(owed.values.flatten().sumOf { it.amount }),style=MaterialTheme.typography.titleSmall)
+                        owed.forEach { (name,list) -> TextButton(onClick={payWorker=name}) {
+                            Text("$name · ${list.size} ${if(list.size==1) "tarea" else "tareas"} · ${money(list.sumOf { it.amount })}") } }
+                    }
+                }
+                payWorker?.let { name -> val list=owed[name].orEmpty()
+                    AlertDialog(onDismissRequest={payWorker=null},title={Text("Pagar a $name")},text={
+                        Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(4.dp)) {
+                            list.forEach { d -> Text("${d.zone} · ${hours(d.activeMs)} · ${money(d.amount)}") }
+                            Text("Total "+money(list.sumOf { it.amount }),style=MaterialTheme.typography.titleMedium)
+                        }
+                    },dismissButton={TextButton(onClick={payWorker=null}) { Text("Cerrar") }},
+                    confirmButton={Button(onClick={ list.forEach { pay.setPaid(it.taskId,true) };payWorker=null;payTick++ }) { Text("Marcar todo como pagado") }})
                 }
             }
             if(!worker && id==null && incoming==null) {
@@ -761,6 +861,9 @@ class AssignmentActivity : TrackingMapActivity() {
                 if(cloud.enabled && linkedPhone) Text("✓ Teléfono vinculado · la tarea le llega en línea",style=MaterialTheme.typography.bodySmall)
                 else if(cloud.enabled) Field("Código del teléfono (si no está vinculado)",recipient,{recipient=deviceCode(it)})
                 Field("Indicación opcional",note,{note=it.take(500)})
+                var rateText by remember { mutableStateOf(pay.hourlyRate.takeIf { it>0 }?.toString().orEmpty()) }
+                Field("Valor de la hora (opcional)",rateText,{ rateText=it.filter { c->c.isDigit() }.take(9);pay.hourlyRate=parseRate(rateText) },numeric=true)
+                if(pay.hourlyRate>0) Text("Se paga por tiempo activo, sin pausas: ${money(pay.hourlyRate)} por hora.",style=MaterialTheme.typography.bodySmall)
                 val selected=data.sectors.find { it.id==sector }
                 if(selected!=null && (previousJourneys(data,selected.id).isNotEmpty() || work.reportsFor(work.tasksFor(selected,data.sectors)).isNotEmpty()))
                     Text("La tarea incluirá los tramos anteriores para retomar esta zona.",style=MaterialTheme.typography.bodySmall)
@@ -768,7 +871,7 @@ class AssignmentActivity : TrackingMapActivity() {
                     val o=buildTask(selected!!,person.trim(),note);val key=o.getString("id")
                     runCatching { val signed=signedTask(o)
                         if(selected.status!="ACTIVE") vm.perform { repo.saveSector(selected.copy(status="ACTIVE")) }
-                        prefs.edit().putBoolean("owner:$key",true).commit();id=key;revision++
+                        prefs.edit().putBoolean("owner:$key",true).commit();pay.stamp(key);id=key;revision++
                         if(cloud.enabled && recipient.isNotBlank()) { cloud.assign(signed,recipient);msg="Tarea enviada a "+person.trim()+". Le aparece en su app en unos segundos." } else { msg="";share(signed) } }
                         .onFailure { msg=it.localizedMessage?.takeIf { m->m.isNotBlank() } ?: "No se pudo preparar o compartir la tarea." }
                 }) { Text(if(cloud.enabled && recipient.isNotBlank()) "Asignar en línea" else "Asignar y compartir") }
