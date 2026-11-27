@@ -39,3 +39,9 @@ Registrar las aplicaciones Android `com.rutacomercial.app` y `com.rutacomercial.
 ## Verificar las reglas localmente
 
 Desde la raíz, ejecutar `firebase emulators:exec --only auth,firestore --project demo-rutacomercial "python scripts/firebase_smoke.py"`. La prueba crea identidades temporales, envía una tarea y dos estados de un recorrido, y comprueba la denegación del acceso a un tercero.
+
+## Hoy y avisos
+
+En Owner, **Ver repartidores hoy** (en Asignaciones y en Opciones del mapa) muestra a cada repartidor que envió avances hoy: su trazo, su última posición y su estado (recorriendo, en pausa, sin señal si no envía hace más de 5 minutos, o terminó). Se actualiza con cada avance, aproximadamente cada minuto.
+
+Avisos: el Repartidor recibe "Tenés una tarea nueva"; el Owner recibe propuestas de zona, repartidores vinculados y recorridos terminados. Llegan mientras la app está abierta o en segundo plano (siempre durante un recorrido). Con la app cerrada del todo no llegan: eso requeriría Cloud Functions, que necesita el plan pago de Firebase.

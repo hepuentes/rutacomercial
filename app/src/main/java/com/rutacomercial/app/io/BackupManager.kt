@@ -11,11 +11,16 @@ import java.io.InputStream
 import java.util.Base64
 
 data class BackupAttachment(val path: String, val content: String)
-data class BackupPayload(val schemaVersion: Int = 2, val createdAt: Long, val data: DataSnapshot, val attachments: List<BackupAttachment>)
+/** v3 adds the assignments folder (tasks, received reports, proposals) and its preferences; v1-v2 restore without them. */
+data class BackupPayload(val schemaVersion: Int = 3, val createdAt: Long, val data: DataSnapshot, val attachments: List<BackupAttachment>,
+    val assignments: List<BackupAttachment>? = null, val assignmentPrefs: Map<String, Any>? = null)
 
 class BackupManager(private val context: Context, private val repository: Repository) {
     private val gson = Gson()
     private val evidencePattern = Regex("evidence/[0-9a-fA-F-]{36}\\.jpg")
+    private val assignmentPattern = Regex("[0-9a-f-]{36}\\.(task|result|received|proposal|outgoing)")
+    private val assignmentDir get() = File(context.filesDir, "assignments")
+    private val assignmentPreferences get() = context.getSharedPreferences("assignments", Context.MODE_PRIVATE)
 
     suspend fun create(uri: Uri, password: CharArray) {
         var plain: ByteArray? = null
@@ -30,7 +35,11 @@ class BackupManager(private val context: Context, private val repository: Reposi
                 require(totalBytes <= 20 * 1024 * 1024) { "Las fotografías superan 20 MB. Conservá un respaldo anterior y reducí las fotografías antes de volver a intentar." }
                 BackupAttachment(path, Base64.getEncoder().encodeToString(file.readBytes()))
             }
-            plain = gson.toJson(BackupPayload(createdAt = System.currentTimeMillis(), data = snapshot, attachments = attachments)).toByteArray(Charsets.UTF_8)
+            val assignments = assignmentDir.listFiles().orEmpty().filter { it.isFile && assignmentPattern.matches(it.name) }
+                .map { BackupAttachment(it.name, it.readText()) }
+            val prefs = assignmentPreferences.all.filterValues { it is String || it is Boolean }.mapValues { it.value!! }
+            plain = gson.toJson(BackupPayload(createdAt = System.currentTimeMillis(), data = snapshot, attachments = attachments,
+                assignments = assignments, assignmentPrefs = prefs)).toByteArray(Charsets.UTF_8)
             val encrypted = BackupCrypto.encrypt(plain, password)
             context.contentResolver.openOutputStream(uri, "wt")?.use { it.write(encrypted) }
                 ?: error("No se pudo abrir el destino del respaldo.")
@@ -47,7 +56,7 @@ class BackupManager(private val context: Context, private val repository: Reposi
                 ?: error("No se pudo abrir el respaldo.")
             plain = BackupCrypto.decrypt(encrypted, password)
             val tree = JsonParser.parseString(plain.toString(Charsets.UTF_8)).asJsonObject
-            require(tree.get("schemaVersion")?.asInt in 1..2 && tree.has("data") && tree.has("attachments")) { "Versión de respaldo incompatible." }
+            require(tree.get("schemaVersion")?.asInt in 1..3 && tree.has("data") && tree.has("attachments")) { "Versión de respaldo incompatible." }
             val dataObject = tree.getAsJsonObject("data")
             listOf("areas", "sectors", "sectorRevisions", "businesses", "campaigns", "visits", "movements", "journeys", "points", "incidents", "routeStops", "audit").forEach {
                 require(dataObject.get(it)?.isJsonArray == true) { "Respaldo incompleto: falta $it." }
@@ -72,6 +81,16 @@ class BackupManager(private val context: Context, private val repository: Reposi
             }
             repository.restoreIntoEmpty(payload.data)
             staged.clear()
+            // Tasks and reports received from workers: written after the records, never over existing files.
+            payload.assignments.orEmpty().filter { assignmentPattern.matches(it.path) }.forEach {
+                val file = File(assignmentDir.apply { mkdirs() }, it.path)
+                if (!file.exists()) file.writeText(it.content)
+            }
+            payload.assignmentPrefs?.let { saved ->
+                val edit = assignmentPreferences.edit()
+                saved.forEach { (k, v) -> when (v) { is Boolean -> edit.putBoolean(k, v); is String -> edit.putString(k, v) } }
+                edit.apply()
+            }
         } finally {
             staged.forEach { it.delete() }
             password.fill('\u0000'); plain?.fill(0)

@@ -12,8 +12,8 @@ android {
         applicationId = "com.rutacomercial.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 27
-        versionName = "0.20.0"
+        versionCode = 29
+        versionName = "0.22.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     flavorDimensions += "edition"
@@ -92,6 +92,8 @@ dependencies {
     // Google Play brings an older Fragment transitively; ActivityResult requires a current version.
     implementation(libs.androidx.fragment)
     testImplementation(libs.junit)
+    // Real org.json for JVM tests; android.jar only ships stubs.
+    testImplementation("org.json:json:20250517")
     testImplementation(libs.coroutines.test)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.runner)

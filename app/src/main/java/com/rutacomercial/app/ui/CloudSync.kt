@@ -62,6 +62,8 @@ internal class CloudSync(private val app: RutaApplication) {
                 listen(db.collection("tasks").whereEqualTo(field, uid)) { doc ->
                     if (worker) receiveTask(doc)
                     else if (doc.id !in subscriptions) {
+                        // A task the worker uploaded after receiving it by file is online from now on.
+                        doc.getString("worker")?.let { w -> if (!prefs.contains("target:"+doc.id)) prefs.edit().putString("target:"+doc.id, w).apply() }
                         subscriptions[doc.id] = scope.launch {
                             retry { listen(doc.reference.collection("reports")) { receiveReport(doc.id, it) } }
                         }
@@ -162,6 +164,9 @@ internal class CloudSync(private val app: RutaApplication) {
     fun proposer(proposalId: String): String? = prefs.getString("proposer:"+proposalId, null)
 
     fun onlineTask(id: String) = prefs.contains("linked:"+id)
+
+    /** Owner: this task already went to a phone through Firestore. */
+    fun sentOnline(id: String) = prefs.contains("target:"+id)
 
     /** True when the server confirmed this journey in its current state (the stamp starts with the state). */
     fun delivered(journeyId: String, state: String) = prefs.getString("sent:"+journeyId, null)?.startsWith("$state/") == true
@@ -335,8 +340,10 @@ internal class CloudSync(private val app: RutaApplication) {
         val edit = prefs.edit().putBoolean("linked:"+doc.id,true).putString("taskOwner:"+doc.id, ownerUid)
         if (owner==task.getString("ownerKey")) edit.putString("ownerUid", ownerUid)
         if (!existing.exists()) {
+            val fresh = !prefs.contains("pending:"+doc.id)
             save(local(doc.id,"received"),task)
             edit.putBoolean("pending:"+doc.id,true)
+            if (fresh) Notifier.notify(app, "task:"+doc.id, "Tenés una tarea nueva", task.optString("name")+" · tocá para verla")
         }
         edit.commit()
         revision.update { it+1 }
@@ -351,7 +358,12 @@ internal class CloudSync(private val app: RutaApplication) {
         val file = local(doc.id,"result")
         val old = file.takeIf { it.exists() }?.let { JSONObject(it.readText()) }
         require(old==null || old.optString("assignmentId",doc.id)==taskId)
-        if (newerReport(old,report)===report && old?.toString()!=report.toString()) save(file,report)
+        if (newerReport(old,report)===report && old?.toString()!=report.toString()) {
+            save(file,report)
+            if (report.optString("state")=="FINISHED" && old?.optString("state")!="FINISHED")
+                Notifier.notify(app, "done:"+doc.id, report.optString("worker")+" terminó el recorrido",
+                    report.optString("name")+" · "+number(report.optDouble("meters")/1000,2)+" km") { putExtra("taskId", taskId) }
+        }
         status.value = "Último avance recibido"
     }
 
@@ -363,6 +375,7 @@ internal class CloudSync(private val app: RutaApplication) {
         check(prefs.edit().putString("worker:$worker", name).putString("person:"+name.lowercase(), worker).commit())
         revision.update { it+1 }
         status.value = "Repartidor vinculado · $name"
+        Notifier.notify(app, "link:$worker", "$name se vinculó", "Ya podés asignarle zonas en línea")
     }
 
     private suspend fun receiveProposal(doc: DocumentSnapshot) {
@@ -373,6 +386,7 @@ internal class CloudSync(private val app: RutaApplication) {
         check(prefs.edit().putString("proposer:"+doc.id, requireNotNull(doc.getString("worker"))).commit())
         save(file, proposal)
         status.value = "Propuesta recibida · "+proposal.getString("name")
+        Notifier.notify(app, "proposal:"+doc.id, "Propuesta de zona de "+proposal.getString("worker"), proposal.getString("name")+" · tocá para revisarla")
     }
 
     private fun digest(bytes: ByteArray) = android.util.Base64.encodeToString(MessageDigest.getInstance("SHA-256").digest(bytes),android.util.Base64.NO_WRAP)

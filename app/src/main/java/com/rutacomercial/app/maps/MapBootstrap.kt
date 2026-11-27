@@ -16,9 +16,16 @@ import java.util.concurrent.TimeUnit
 /** A single HTTP client also bounds requests made by MapLibre's native offline worker. */
 object MapBootstrap {
     const val STYLE_URL = "https://tiles.openfreemap.org/styles/liberty"
+    private const val DARK_STYLE_URL = "https://tiles.openfreemap.org/styles/dark"
+    /** Shared so every open map switches at once; saved for the next start. */
+    val dark = androidx.compose.runtime.mutableStateOf(false)
+    private var prefs: android.content.SharedPreferences? = null
+    fun styleUrl(dark: Boolean) = if (dark) DARK_STYLE_URL else STYLE_URL
+    fun setDark(value: Boolean) { dark.value = value; prefs?.edit()?.putBoolean("dark", value)?.apply() }
     private var initialized = false
     @Synchronized fun initialize(context: Context) {
         if (initialized) return
+        prefs = context.getSharedPreferences("map_style", Context.MODE_PRIVATE).also { dark.value = it.getBoolean("dark", false) }
         MapLibre.getInstance(context.applicationContext)
         val dispatcher = Dispatcher().apply { maxRequests = 4; maxRequestsPerHost = 4 }
         val client = OkHttpClient.Builder()
