@@ -42,7 +42,15 @@ Desde la raíz, ejecutar `firebase emulators:exec --only auth,firestore --projec
 
 ## Hoy y avisos
 
-En Owner, **Ver repartidores hoy** (en Asignaciones y en Opciones del mapa) muestra a cada repartidor que envió avances hoy: su trazo, su última posición y su estado (recorriendo, en pausa, sin señal si no envía hace más de 5 minutos, o terminó). Se actualiza con cada avance, aproximadamente cada minuto.
+En Owner, **Ver repartidores hoy** (en Asignaciones y en Opciones del mapa) muestra a cada repartidor que envió avances hoy: su trazo, su última posición y su estado (recorriendo, en pausa, sin señal si no envía hace más de 5 minutos, o terminó). Se actualiza con cada avance: cada minuto, o cada 20 segundos mientras el Owner tiene abierto Hoy o el mapa de esa tarea (el Owner deja una marca `watch/{repartidor}` que vence a los 4 minutos). Tocá un repartidor para ver sus marcas de inicio, pausas, reanudaciones y fin. El mapa de cada tarea muestra el punto en vivo del repartidor con hace cuánto llegó, y **Ver cubiertas** suma en verde las zonas ya terminadas de la campaña actual.
+
+### Campañas
+
+En Asignaciones, **Cerrar campaña** guarda las tareas terminadas con sus recorridos en **Campañas anteriores** y las saca del mapa, del estado de las zonas y de la guía. Las tareas en curso siguen abiertas y los pagos pendientes no se pierden. Con **Repetir zonas** esas zonas quedan abiertas para asignarlas de nuevo al mismo u otro repartidor. Las campañas se guardan en `assignments/campaigns.json` y viajan en el respaldo.
+
+### Avisos
+
+Tarea nueva, propuesta recibida o aceptada, repartidor fuera de zona y recorrido terminado salen como aviso emergente. Los avisos de una misma tarea se reemplazan en vez de acumularse. El resumen de las 20 h es un aviso normal. Sin Firebase Cloud Messaging (plan pago) los avisos llegan mientras la app está viva: siempre durante un recorrido; en el Owner, Android puede congelar la app en segundo plano y el aviso llega al volver a abrirla.
 
 Avisos: el Repartidor recibe "Tenés una tarea nueva"; el Owner recibe propuestas de zona, repartidores vinculados y recorridos terminados. Llegan mientras la app está abierta o en segundo plano (siempre durante un recorrido). Con la app cerrada del todo no llegan: eso requeriría Cloud Functions, que necesita el plan pago de Firebase.
 

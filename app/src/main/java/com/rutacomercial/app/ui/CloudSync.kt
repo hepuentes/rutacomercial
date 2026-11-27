@@ -55,6 +55,7 @@ internal class CloudSync(private val app: RutaApplication) {
             val worker = BuildConfig.WORKER_EDITION
             status.value = "Conectado"
             launch { outgoingLoop(uid, worker) }
+            if (worker) launch { retry { watchedBy(uid) } }
             if (!worker) launch { retry { listen(db.collection("proposals").whereEqualTo("owner", uid)) { receiveProposal(it) } } }
             if (!worker) launch { retry { listen(db.collection("links").whereEqualTo("owner", uid)) { receiveLink(it) } } }
             val field = if (worker) "worker" else "owner"
@@ -187,6 +188,37 @@ internal class CloudSync(private val app: RutaApplication) {
         edit.apply(); revision.update { it+1 }
     }
 
+    /** Elapsed-clock deadline until which the Owner is looking at this worker's map. */
+    @Volatile private var watchedUntil = 0L
+    private val watchedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** Owner: while a map of these workers is open, their phones report every 20 s instead of every minute. */
+    fun watch(workers: Collection<String>) {
+        val me = device.value
+        if (!enabled || me.isEmpty()) return
+        val now = System.currentTimeMillis()
+        for (w in workers.filter { it.matches(Regex("[A-Za-z0-9_-]{20,128}")) && now - (watchedAt[it] ?: 0L) > 110_000L }) {
+            watchedAt[w] = now
+            db.collection("watch").document(w).set(mapOf("owner" to me, "until" to com.google.firebase.Timestamp(java.util.Date(now + 4 * 60_000L))))
+                .addOnFailureListener { watchedAt.remove(w) }
+        }
+    }
+
+    /** Phone code of the worker an online task went to. */
+    fun target(taskId: String): String? = prefs.getString("target:"+taskId, null)
+
+    private suspend fun watchedBy(uid: String) {
+        callbackFlow<DocumentSnapshot> {
+            val listener = db.collection("watch").document(uid).addSnapshotListener { s, e -> if (e != null) close(e) else if (s != null) trySend(s) }
+            awaitClose { listener.remove() }
+        }.collect { s ->
+            // Converted to the elapsed clock and capped, so neither phone's hour can stretch it.
+            val left = ((s.getTimestamp("until")?.toDate()?.time ?: 0L) - System.currentTimeMillis()).coerceIn(0L, 5 * 60_000L)
+            watchedUntil = android.os.SystemClock.elapsedRealtime() + left
+            wake.update { it + 1 }
+        }
+    }
+
     private suspend fun outgoingLoop(uid: String, worker: Boolean) {
         var seen = wake.value
         var lastStates = ""
@@ -195,7 +227,8 @@ internal class CloudSync(private val app: RutaApplication) {
             try {
                 val now = android.os.SystemClock.elapsedRealtime()
                 val states = if(worker) app.repository.dao.journeys().joinToString { it.id+it.state } else ""
-                if (!worker || states != lastStates || now-lastSync >= 60_000 || lastSync==0L) {
+                val period = if (now < watchedUntil) 20_000L else 60_000L
+                if (!worker || states != lastStates || now-lastSync >= period || lastSync==0L) {
                     flush(uid,worker)
                     lastStates = states
                     lastSync = now
@@ -386,7 +419,10 @@ internal class CloudSync(private val app: RutaApplication) {
             val fresh = !prefs.contains("pending:"+doc.id)
             save(local(doc.id,"received"),task)
             edit.putBoolean("pending:"+doc.id,true)
-            if (fresh) Notifier.notify(app, "task:"+doc.id, "Tenés una tarea nueva", task.optString("name")+" · tocá para verla")
+            // A task born from this worker's own proposal is an answer, not a surprise: say so once.
+            val accepted = folder.listFiles().orEmpty()
+                .any { it.extension == "outgoing" && runCatching { proposalKey(it.nameWithoutExtension, "task") }.getOrNull() == doc.id }
+            if (fresh) Notifier.notify(app, "task:"+doc.id, if (accepted) "Tu propuesta fue aceptada" else "Tenés una tarea nueva", task.optString("name")+" · tocá para verla")
             receiveGuide(doc.id, task)
         }
         edit.commit()
@@ -405,10 +441,10 @@ internal class CloudSync(private val app: RutaApplication) {
         if (newerReport(old,report)===report && old?.toString()!=report.toString()) {
             save(file,report)
             if (outsideChosen(report) && !outsideChosen(old))
-                Notifier.notify(app, "outside:"+doc.id, report.optString("worker")+" sigue fuera de la zona",
+                Notifier.notify(app, "task:"+taskId, report.optString("worker")+" sigue fuera de la zona",
                     report.optString("name")+" · decidió recorrer otra parte. Lo ves en Hoy y en su informe.") { putExtra("taskId", taskId) }
             if (report.optString("state")=="FINISHED" && old?.optString("state")!="FINISHED")
-                Notifier.notify(app, "done:"+doc.id, report.optString("worker")+" terminó el recorrido",
+                Notifier.notify(app, "task:"+taskId, report.optString("worker")+" terminó el recorrido",
                     report.optString("name")+" · "+number(report.optDouble("meters")/1000,2)+" km") { putExtra("taskId", taskId) }
         }
         status.value = "Último avance recibido"

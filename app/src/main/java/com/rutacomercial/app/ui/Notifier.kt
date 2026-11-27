@@ -19,18 +19,24 @@ import com.rutacomercial.app.R
  */
 internal object Notifier {
     private const val CHANNEL = "avisos"
+    /** Heads-up: pops over whatever is on screen. Channel importance can't change after creation, hence a new id. */
+    private const val URGENT = "avisos_urgentes"
 
-    fun notify(context: Context, key: String, title: String, text: String, extras: Intent.() -> Unit = {}) {
+    /** [key] identifies what the notice is about: a newer notice with the same key replaces the old one. */
+    fun notify(context: Context, key: String, title: String, text: String, urgent: Boolean = true, extras: Intent.() -> Unit = {}) {
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
         val manager = context.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(CHANNEL, "Avisos de tareas y recorridos", NotificationManager.IMPORTANCE_DEFAULT)
-            .apply { description = "Tareas nuevas, propuestas de zona y recorridos terminados" })
+            .apply { description = "Resumen del día" })
+        manager.createNotificationChannel(NotificationChannel(URGENT, "Tareas y recorridos", NotificationManager.IMPORTANCE_HIGH)
+            .apply { description = "Tareas nuevas, propuestas de zona, repartidor fuera de zona y recorridos terminados" })
         val open = Intent(context, AssignmentActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP).apply(extras)
         val pending = PendingIntent.getActivity(context, key.hashCode(), open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        manager.notify(key.hashCode(), NotificationCompat.Builder(context, CHANNEL)
+        manager.notify(key.hashCode(), NotificationCompat.Builder(context, if (urgent) URGENT else CHANNEL)
             .setSmallIcon(R.drawable.ic_tracking).setContentTitle(title).setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setPriority(if (urgent) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT)
             .setContentIntent(pending).setAutoCancel(true).build())
     }
 }

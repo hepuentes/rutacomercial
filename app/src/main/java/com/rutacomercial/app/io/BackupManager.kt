@@ -18,7 +18,7 @@ data class BackupPayload(val schemaVersion: Int = 3, val createdAt: Long, val da
 class BackupManager(private val context: Context, private val repository: Repository) {
     private val gson = Gson()
     private val evidencePattern = Regex("evidence/[0-9a-fA-F-]{36}\\.jpg")
-    private val assignmentPattern = Regex("[0-9a-f-]{36}\\.(task|result|received|proposal|outgoing)")
+    private val assignmentPattern = Regex("[0-9a-f-]{36}\\.(task|result|received|proposal|outgoing)|campaigns\\.json")
     private val assignmentDir get() = File(context.filesDir, "assignments")
     private val assignmentPreferences get() = context.getSharedPreferences("assignments", Context.MODE_PRIVATE)
 

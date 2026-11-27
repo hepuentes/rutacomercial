@@ -585,14 +585,46 @@ class AssignmentActivity : TrackingMapActivity() {
                 val previousPins=remember(zone,sessions,journeyId,data.audit,data.points) {
                     previousMarks(zone)+sessions.takeWhile { it!=journeyId }.flatMap { journeyMarks(data,it) }
                 }
+                // Owner: other zones already walked, off by default so the task stays readable.
+                var showCovered by remember(id) { mutableStateOf(false) }
+                val covered=remember(work,data.sectors,id,showCovered) {
+                    if(worker || !showCovered) emptyList() else {
+                        val finished=work.reports.filter { it.state=="FINISHED" }.map { it.taskId }.toSet()
+                        (work.tasks.filter { it.id!=id && it.id in finished && it.id !in work.closed }.map { t ->
+                            MapSector("covered-"+t.id,t.name,"#68B75F",Geo.parsePolygon(t.polygon).map { MapCoordinate(it.first,it.second) },completed=true)
+                        } + mapSectors(data).filter { it.completed }).distinctBy { it.points }.filter { it.points!=polygon }
+                    }
+                }
+                // Owner: where the worker is now, from the last progress received.
+                val livePin=remember(taskReports,now) {
+                    if(worker) null else taskReports.filter { it.state!="FINISHED" }.maxByOrNull { it.updated }?.let { r ->
+                        r.lines.lastOrNull { it.points.isNotEmpty() }?.points?.last()?.let { p ->
+                            val minutes=((now-r.updated)/60_000).coerceAtLeast(0)
+                            MapBusiness("live-"+r.id,r.worker+" · "+if(minutes==0L) "ahora" else "hace $minutes min",p.latitude,p.longitude,
+                                if(minutes>=5) "#B3261E" else if(r.state=="PAUSED") "#9A5B00" else "#1B6B3A")
+                        }
+                    }
+                }
+                val watching=!worker && livePin!=null
+                // Framed once with the worker in view, then the map stays where the Owner leaves it.
+                var firstLive by remember(id) { mutableStateOf<MapCoordinate?>(null) }
+                LaunchedEffect(livePin!=null) { if(firstLive==null) livePin?.let { firstLive=MapCoordinate(it.latitude,it.longitude) } }
+                LaunchedEffect(id,watching) {
+                    if(watching) lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                        while(true) { cloud.watch(listOfNotNull(cloud.target(id!!))); delay(120_000) }
+                    }
+                }
                 Box(Modifier.fillMaxWidth().then(if(worker) Modifier.weight(1f) else Modifier.mapHeight(.62f))) {
-                TerritoryMap(Modifier.fillMaxSize(),sectors=listOf(MapSector(id!!,zone.getString("name"),"#087F75",polygon,true)),tracks=if(worker) previous+live else previous+taskReports.flatMap { it.lines },
+                TerritoryMap(Modifier.fillMaxSize(),sectors=covered+listOf(MapSector(id!!,zone.getString("name"),"#087F75",polygon,true)),tracks=if(worker) previous+live else previous+taskReports.flatMap { it.lines },
                     marks=if(worker) previousPins+marks else previousMarks(zone)+taskReports.flatMap { it.marks },onMapGesture={userCamera=true;locateRequested=false;following=false},fieldTools=worker,
                     onGuideActive={guiding=it},navigation=nav.takeIf { worker },onDrawHere={p->nav.close();proposeAt(p)},onNavigateLocate={action("locate")},
                     previewGuide=worker && journey==null,onGuidePreview={showingPreview=it},
-                    followingLocation=following && fresh,onRecenter=if(worker) ({ userCamera=true;following=true;locateRequested=true;action("locate") }) else null,center=target,centerRequest=cameraRequest,fitArea=if(target==null) polygon+listOfNotNull(overview) else emptyList(),
+                    followingLocation=following && fresh,onRecenter=if(worker) ({ userCamera=true;following=true;locateRequested=true;action("locate") }) else null,center=target,centerRequest=cameraRequest,fitArea=if(target==null) polygon+listOfNotNull(overview,firstLive) else emptyList(),
                     currentLocation=if(worker) displayed else null,locationFresh=fresh,accuracyMeters=tracking.accuracyMeters,
-                    businesses=boundaryPoint?.let { listOf(MapBusiness("arrival","Punto de llegada sugerido",it.latitude,it.longitude,"#BA5018")) }.orEmpty())
+                    businesses=boundaryPoint?.let { listOf(MapBusiness("arrival","Punto de llegada sugerido",it.latitude,it.longitude,"#BA5018")) }.orEmpty()+listOfNotNull(livePin))
+                if(!worker) Column(Modifier.align(Alignment.TopStart).padding(8.dp)) {
+                    SmallFloatingAction(if(showCovered) "Ocultar cubiertas" else "Ver cubiertas") { showCovered=!showCovered }
+                }
                 // Floating over the map so the map keeps the space on small phones.
                 if(worker) Column(Modifier.align(Alignment.TopStart).padding(8.dp),verticalArrangement=Arrangement.spacedBy(6.dp)) {
                     SmallFloatingAction("Ver zona") { userCamera=true;following=false;overview=null;locateRequested=false;target=null;cameraRequest++ }
@@ -765,9 +797,9 @@ class AssignmentActivity : TrackingMapActivity() {
                                 else -> {
                                     if(due.unpaidMs>0) {
                                         Text("${hours(due.activeMs)} activos",style=MaterialTheme.typography.bodySmall)
-                                        if(due.vehicleMs>0) Text("− ${minutes(due.vehicleMs)} en vehículo",style=MaterialTheme.typography.bodySmall)
-                                        if(due.mockMs>0) Text("− ${minutes(due.mockMs)} con ubicación simulada",style=MaterialTheme.typography.bodySmall)
-                                        if(due.clockMs>0) Text("− ${minutes(due.clockMs)} por hora del teléfono adelantada",style=MaterialTheme.typography.bodySmall)
+                                        if(due.vehicleMs>=30_000) Text("− ${minutes(due.vehicleMs)} en vehículo",style=MaterialTheme.typography.bodySmall)
+                                        if(due.mockMs>=30_000) Text("− ${minutes(due.mockMs)} con ubicación simulada",style=MaterialTheme.typography.bodySmall)
+                                        if(due.clockMs>=30_000) Text("− ${minutes(due.clockMs)} por hora del teléfono adelantada",style=MaterialTheme.typography.bodySmall)
                                     }
                                     Text("${hours(due.payableMs)} pagables × ${money(due.rate)} por hora",style=MaterialTheme.typography.bodySmall)
                                     Text(money(due.amount)+if(due.finished) "" else " · a la fecha",style=MaterialTheme.typography.headlineSmall)
@@ -877,9 +909,51 @@ class AssignmentActivity : TrackingMapActivity() {
                 }) { Text(if(cloud.enabled && recipient.isNotBlank()) "Asignar en línea" else "Asignar y compartir") }
             }
             if(!worker && id!=null) TextButton(onClick={id=null}) { Text("Otra asignación") }
-            if(!worker && id==null) ids.filter { it!=id }.forEach { key ->
-                val o=remember(key) { read(key,"task")!! }
-                TextButton(onClick={id=key;if(worker)prefs.edit().putString("selected",key).apply()}) { Text(o.getString("name")+" · "+o.getString("worker")) }
+            if(!worker && id==null) {
+                ids.filter { it !in work.closed }.forEach { key ->
+                    val o=remember(key) { read(key,"task")!! }
+                    TextButton(onClick={id=key}) { Text(o.getString("name")+" · "+o.getString("worker")) }
+                }
+                val closable=remember(work) { work.closable() }
+                var closing by remember { mutableStateOf(false) }
+                if(closable.isNotEmpty()) OutlinedButton(onClick={closing=true},modifier=Modifier.fillMaxWidth()) { Text("Cerrar campaña") }
+                if(closing) {
+                    var name by remember { mutableStateOf("Campaña "+java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy"))) }
+                    var repeat by remember { mutableStateOf(true) }
+                    AlertDialog(onDismissRequest={closing=false},title={Text("Cerrar campaña")},text={
+                        Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
+                            Text("Se guardan ${closable.size} ${if(closable.size==1) "tarea terminada" else "tareas terminadas"} con sus recorridos en Campañas anteriores y se limpian del mapa. Las tareas en curso siguen abiertas. Los pagos pendientes no se pierden.")
+                            Field("Nombre",name,{name=it.take(80)})
+                            Row(Modifier.fillMaxWidth().toggleable(value=repeat,role=androidx.compose.ui.semantics.Role.Checkbox) { repeat=it },verticalAlignment=Alignment.CenterVertically) {
+                                Checkbox(repeat,null); Text("Repetir zonas: dejarlas abiertas para asignar de nuevo",Modifier.padding(start=8.dp))
+                            }
+                        }
+                    },dismissButton={TextButton(onClick={closing=false}) { Text("Cancelar") }},confirmButton={Button(enabled=name.isNotBlank(),onClick={
+                        closing=false
+                        val zones=data.sectors.filter { s -> closable.any { it.belongsTo(s,data.sectors) } }
+                        scope.launch {
+                            runCatching {
+                                withContext(Dispatchers.IO) {
+                                    Campaigns.close(directory,name.trim(),closable.map { it.id })
+                                    if(repeat) zones.filter { it.status!="ACTIVE" }.forEach { repo.saveSector(it.copy(status="ACTIVE")) }
+                                }
+                            }.onSuccess { msg="Campaña cerrada · "+name.trim()+(if(repeat) ". Las zonas quedaron abiertas para asignar." else ".");revision++ }
+                             .onFailure { msg="No se pudo cerrar la campaña." }
+                        }
+                    }) { Text("Cerrar campaña") }})
+                }
+                val campaigns=remember(work) { work.closed.entries.groupBy({ it.value },{ it.key }) }
+                var openCampaign by remember { mutableStateOf<String?>(null) }
+                if(campaigns.isNotEmpty()) Text("Campañas anteriores",style=MaterialTheme.typography.titleSmall)
+                campaigns.forEach { (campaign,tasks) ->
+                    TextButton(onClick={openCampaign=if(openCampaign==campaign) null else campaign}) {
+                        Text(campaign+" · "+tasks.size+(if(tasks.size==1) " tarea" else " tareas")+if(openCampaign==campaign) " ▲" else " ▼")
+                    }
+                    if(openCampaign==campaign) tasks.filter { it in ids }.forEach { key ->
+                        val o=remember(key) { read(key,"task")!! }
+                        TextButton(onClick={id=key},modifier=Modifier.padding(start=16.dp)) { Text(o.getString("name")+" · "+o.getString("worker")) }
+                    }
+                }
             }
             if(worker && busyJourney==null && data.journeys.any { it.state=="FINISHED" }) {
                 if(!workerMap) TextButton(onClick={showHistory=true}) { Text("Historial de recorridos") }

@@ -49,6 +49,16 @@ service cloud.firestore {
         && request.resource.data.name.size() <= 100;
     }
 
+    // The Owner is looking at a worker's map: that phone reports more often for a few minutes.
+    match /watch/{workerId} {
+      allow get: if request.auth != null && (request.auth.uid == workerId || request.auth.uid == resource.data.owner);
+      allow create, update: if request.auth != null && request.resource.data.keys().hasOnly(['owner', 'until'])
+        && request.resource.data.owner == request.auth.uid
+        && request.resource.data.until is timestamp && request.resource.data.until < request.time + duration.value(30, 'm')
+        && exists(/databases/$(database)/documents/links/$(workerId))
+        && get(/databases/$(database)/documents/links/$(workerId)).data.owner == request.auth.uid;
+    }
+
     // Only a linked worker proposes, and only to its own Owner.
     match /proposals/{proposalId} {
       allow read: if member(resource.data);
