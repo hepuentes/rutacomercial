@@ -12,8 +12,8 @@ android {
         applicationId = "com.rutacomercial.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 29
-        versionName = "0.22.0"
+        versionCode = 30
+        versionName = "0.23.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     flavorDimensions += "edition"

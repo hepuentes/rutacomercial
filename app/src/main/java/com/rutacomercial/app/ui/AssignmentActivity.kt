@@ -238,6 +238,11 @@ class AssignmentActivity : TrackingMapActivity() {
             sharedText=null;incoming=null;proposeAt(location.point)
         }
         LaunchedEffect(incomingRequest) {
+            // Opened from a notice: go straight to what it announced.
+            if(!worker) {
+                intent.getStringExtra("openProposal")?.let { key -> runCatching { read(key,"proposal") }.getOrNull()?.let { incoming=it;id=null;reportId=null } }
+                intent.getStringExtra("taskId")?.takeIf { runCatching { UUID.fromString(it) }.isSuccess }?.let { if(incomingRequest>0) { id=it;reportId=null } }
+            }
             if(worker && intent.action==Intent.ACTION_SEND && intent.type=="text/plain") {
                 val text=intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
                 if(text!=null && text.length in 1..8192) sharedText=text else msg="Compartí un lugar o sus coordenadas."
@@ -304,17 +309,18 @@ class AssignmentActivity : TrackingMapActivity() {
             )
             if(msg.isNotBlank()) Text(msg)
             if(cloud.enabled && incoming==null && worker && !workerMap && cloud.canPropose())
-                Text("✓ Vinculado con tu Owner · "+onlineStatus,style=MaterialTheme.typography.labelMedium)
+                Text(if(onlineStatus.contains("Vinculado")) onlineStatus else "✓ Vinculado con tu Owner · "+onlineStatus,style=MaterialTheme.typography.labelMedium)
             else if(cloud.enabled && incoming==null && worker && !workerMap) {
                 LinkCard()
                 Text(onlineStatus,style=MaterialTheme.typography.labelMedium)
             }
-            if(worker && busyJourney==null && incoming==null) pendingOnline.forEach { key ->
-                val doc=remember(key,onlineRevision) { read(key,"received") }
-                if(doc!=null) Surface(shape=MaterialTheme.shapes.large,color=MaterialTheme.colorScheme.primaryContainer) {
+            if(worker && busyJourney==null && incoming==null) {
+                val docs=remember(pendingOnline,onlineRevision) { pendingOnline.mapNotNull { read(it,"received") } }
+                // One card however many arrive, so the map keeps its space.
+                if(docs.isNotEmpty()) Surface(shape=MaterialTheme.shapes.large,color=MaterialTheme.colorScheme.primaryContainer) {
                     Column(Modifier.fillMaxWidth().padding(12.dp),verticalArrangement=Arrangement.spacedBy(6.dp)) {
-                        Text("Tenés una tarea nueva",style=MaterialTheme.typography.titleMedium)
-                        Button(onClick={incoming=doc},modifier=Modifier.fillMaxWidth().heightIn(min=56.dp)) { Text("Ver tarea · "+doc.optString("name"),fontSize=18.sp) }
+                        Text(if(docs.size==1) "Tenés una tarea nueva" else "Tenés ${docs.size} tareas nuevas",style=MaterialTheme.typography.titleMedium)
+                        docs.forEach { doc -> Button(onClick={incoming=doc},modifier=Modifier.fillMaxWidth().heightIn(min=52.dp)) { Text("Ver tarea · "+doc.optString("name"),fontSize=17.sp) } }
                     }
                 }
             }
@@ -641,7 +647,7 @@ class AssignmentActivity : TrackingMapActivity() {
                                 }) { Text("Iniciar jornada") }})
                             }
                         }
-                        else -> WorkerJourneyPanel(journey,tracking.message,if(cloud.onlineTask(zone.getString("id"))) workerSyncText(cloud.delivered(journey.id,journey.state),false) else null,
+                        else -> WorkerJourneyPanel(journey,tracking.message,if(cloud.onlineTask(zone.getString("id"))) workerSyncText(cloud.deliveredRecently(journey.id,journey.state),false) else null,
                             onPause={TrackingController.pause(this@AssignmentActivity)},onResume={action("resume")},
                             onFinish={TrackingController.finish(this@AssignmentActivity)})
                     }

@@ -26,7 +26,7 @@ internal object Notifier {
         val manager = context.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(CHANNEL, "Avisos de tareas y recorridos", NotificationManager.IMPORTANCE_DEFAULT)
             .apply { description = "Tareas nuevas, propuestas de zona y recorridos terminados" })
-        val open = Intent(context, AssignmentActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP).apply(extras)
+        val open = Intent(context, AssignmentActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP).apply(extras)
         val pending = PendingIntent.getActivity(context, key.hashCode(), open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         manager.notify(key.hashCode(), NotificationCompat.Builder(context, CHANNEL)
             .setSmallIcon(R.drawable.ic_tracking).setContentTitle(title).setContentText(text)

@@ -48,6 +48,11 @@ class TodayActivity : ComponentActivity() {
 @Composable
 private fun TodayScreen(close: () -> Unit) {
     val work = zoneWork()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val repo = remember { (context.applicationContext as com.rutacomercial.app.RutaApplication).repository }
+    val vm: RutaViewModel = androidx.lifecycle.viewmodel.compose.viewModel(factory = remember { RutaViewModel.factory(repo) })
+    val data by vm.data.collectAsState()
+    val zones = remember(data.sectors) { mapSectors(data) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) { while (true) { delay(30_000); now = System.currentTimeMillis() } }
     val since = remember { LocalDate.now().atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli() }
@@ -63,7 +68,7 @@ private fun TodayScreen(close: () -> Unit) {
             }
             TextButton(onClick = close) { Text("Volver") }
         }
-        TerritoryMap(Modifier.fillMaxWidth().weight(1f), tracks = workers.flatMap { it.lines },
+        TerritoryMap(Modifier.fillMaxWidth().weight(1f), tracks = workers.flatMap { it.lines }, sectors = zones,
             businesses = workers.mapNotNull { w ->
                 val state = todayState(w.state, w.updated, now)
                 w.last?.let { MapBusiness("today-" + w.worker, w.worker + " · " + state, it.latitude, it.longitude, stateColors.getValue(state)) }
@@ -78,7 +83,7 @@ private fun TodayScreen(close: () -> Unit) {
                     Row(Modifier.fillMaxWidth().padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text(w.worker + " · " + w.zone, style = MaterialTheme.typography.titleSmall)
-                            Text(number(w.meters / 1000, 2) + " km · " + if (minutes == 0L) "ahora" else "hace $minutes min", style = MaterialTheme.typography.bodySmall)
+                            Text(number(w.meters / 1000, 2) + " km hoy · " + if (minutes == 0L) "ahora" else "hace $minutes min", style = MaterialTheme.typography.bodySmall)
                         }
                         Text(state, color = Color(android.graphics.Color.parseColor(stateColors.getValue(state))), style = MaterialTheme.typography.labelLarge)
                     }
