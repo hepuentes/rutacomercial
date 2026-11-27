@@ -73,7 +73,7 @@ internal fun WorkerZoneProposal(worker:String, position:MapCoordinate?, initialZ
             businesses=anchor?.let { listOf(MapBusiness("reference","Referencia",it.latitude,it.longitude,"#B04C0B")) }.orEmpty(),
             sectors=references+if(valid) listOf(MapSector("draft",title,"#9A3474",polygon,true)) else emptyList(),selectionColor="#9A3474",
             onSelectionChanged={ encoded=Geo.polygonJson(it.map { p->p.latitude to p.longitude });proposalId=newId() })
-        if(references.isNotEmpty()) Text("Bordes grises · zonas recibidas     Azul · recorrido GPS",style=MaterialTheme.typography.labelSmall)
+        if(references.isNotEmpty()) Text("Gris · zonas recibidas   Verde rayado · ya recorridas   Azul · GPS",style=MaterialTheme.typography.labelSmall)
         if(points.isNotEmpty() && !valid) Text("Volvé a dibujar el borde sin cruzar el trazo.")
         Row(horizontalArrangement=Arrangement.spacedBy(6.dp)) {
             FilledTonalButton(onClick={requested=true;onLocate()},modifier=Modifier.weight(1f)) { Text("Mi ubicación") }

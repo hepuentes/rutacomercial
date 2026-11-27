@@ -26,7 +26,23 @@ internal fun OwnerGoogleAccount(cloud: CloudSync) {
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
-    account?.let { Text("✓ Cuenta de Owner respaldada · $it", style = MaterialTheme.typography.bodySmall); return }
+    var confirmOut by remember { mutableStateOf(false) }
+    account?.let { email ->
+        Surface(shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.secondaryContainer) {
+            Row(Modifier.fillMaxWidth().padding(start = 10.dp, end = 4.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Cuenta de Owner", style = MaterialTheme.typography.labelMedium)
+                    Text("✓ $email", style = MaterialTheme.typography.bodyMedium)
+                }
+                TextButton(enabled = !busy, onClick = { confirmOut = true }) { Text("Cerrar sesión") }
+            }
+        }
+        if (confirmOut) AlertDialog(onDismissRequest = { confirmOut = false }, title = { Text("¿Cerrar sesión de Google?") },
+            text = { Text("Mientras no vuelvas a entrar con $email, tus repartidores no reciben tareas nuevas ni ves sus avances. Lo guardado en este teléfono no se borra.") },
+            dismissButton = { TextButton(onClick = { confirmOut = false }) { Text("Cancelar") } },
+            confirmButton = { Button(onClick = { confirmOut = false; busy = true; scope.launch { runCatching { cloud.signOutGoogle() }; busy = false } }) { Text("Cerrar sesión") } })
+        return
+    }
     Surface(shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.secondaryContainer) {
         Column(Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("Respaldá tu cuenta de Owner", style = MaterialTheme.typography.titleSmall)

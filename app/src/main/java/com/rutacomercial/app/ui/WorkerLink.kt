@@ -14,6 +14,7 @@ import com.google.zxing.BarcodeFormat
 import com.journeyapps.barcodescanner.BarcodeEncoder
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import kotlinx.coroutines.launch
 
 /** What the worker learns from the Owner's QR: where to send its code and which signature to trust. */
 internal data class LinkInvite(val owner: String, val key: String)
@@ -30,7 +31,7 @@ internal fun parseLinkQr(text: String, validKey: (String) -> Boolean = OwnerIden
 }
 
 @Composable
-internal fun OwnerLinkQrDialog(ownerUid: String, close: () -> Unit) {
+internal fun OwnerLinkQrDialog(ownerUid: String, code: String?, codeError: Boolean, close: () -> Unit) {
     val qr = remember(ownerUid) {
         BarcodeEncoder().encodeBitmap(linkQr(ownerUid, OwnerIdentity.publicKey()), BarcodeFormat.QR_CODE, 600, 600).asImageBitmap()
     }
@@ -38,6 +39,13 @@ internal fun OwnerLinkQrDialog(ownerUid: String, close: () -> Unit) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("En el teléfono del repartidor, abrí RutaComercial Repartidor y tocá Escanear QR de mi Owner.")
             Image(qr, "QR para vincular repartidor", Modifier.fillMaxWidth().height(240.dp))
+            HorizontalDivider()
+            Text("¿No están juntos? Mandale este código por WhatsApp. Vale 30 minutos.")
+            when {
+                code != null -> Text(code.chunked(3).joinToString("-"), style = MaterialTheme.typography.headlineLarge)
+                codeError -> Text("No se pudo crear el código. Revisá la conexión.", color = MaterialTheme.colorScheme.error)
+                else -> CircularProgressIndicator()
+            }
             Text("Se hace una sola vez por teléfono. Después aparece en tu lista de repartidores.", style = MaterialTheme.typography.bodySmall)
         }
     }, confirmButton = { TextButton(onClick = close) { Text("Listo") } })
@@ -45,8 +53,13 @@ internal fun OwnerLinkQrDialog(ownerUid: String, close: () -> Unit) {
 
 /** One scan links the phone; WhatsApp stays as a fallback for phones without camera. */
 @Composable
-internal fun WorkerLinkCard(deviceId: String, onLink: (LinkInvite, String) -> Unit, onShareCode: () -> Unit) {
+internal fun WorkerLinkCard(deviceId: String, onLink: (LinkInvite, String) -> Unit, onShareCode: () -> Unit,
+    lookup: suspend (String) -> LinkInvite?) {
     var invite by remember { mutableStateOf<LinkInvite?>(null) }
+    var typing by remember { mutableStateOf(false) }
+    var typed by remember { mutableStateOf("") }
+    var checking by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     var name by remember { mutableStateOf("") }
     var error by remember { mutableStateOf("") }
     val scan = rememberLauncherForActivityResult(ScanContract()) { result ->
@@ -57,13 +70,26 @@ internal fun WorkerLinkCard(deviceId: String, onLink: (LinkInvite, String) -> Un
     Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.primaryContainer) {
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("Primer paso: vinculá este teléfono con tu Owner", style = MaterialTheme.typography.titleMedium)
-            Text("Pedile que toque Vincular repartidor y escaneá el QR. Se hace una sola vez.")
+            Text("Pedile que toque Vincular repartidor. Escaneá su QR o escribí el código que te mande. Se hace una sola vez.")
             Button(onClick = {
                 scan.launch(ScanOptions().setOrientationLocked(false).setDesiredBarcodeFormats(ScanOptions.QR_CODE)
                     .setPrompt("Apuntá al QR del Owner").setBeepEnabled(false))
             }, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) { Text("Escanear QR de mi Owner", fontSize = 18.sp) }
+            if (!typing) OutlinedButton(onClick = { typing = true; error = "" }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("Tengo un código") }
+            else {
+                OutlinedTextField(value = typed, onValueChange = { typed = it.uppercase().filter { c -> c.isLetterOrDigit() }.take(6) },
+                    label = { Text("Código de 6 letras y números") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                Button(enabled = typed.length == 6 && !checking, onClick = {
+                    checking = true; error = ""
+                    scope.launch {
+                        val found = runCatching { lookup(typed) }.getOrNull()
+                        checking = false
+                        if (found == null) error = "Ese código no existe o venció. Pedile al Owner uno nuevo." else invite = found
+                    }
+                }, modifier = Modifier.fillMaxWidth()) { Text(if (checking) "Buscando…" else "Usar código") }
+            }
             if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error)
-            TextButton(enabled = deviceId.isNotBlank(), onClick = onShareCode) { Text("Sin cámara: enviar mi código por WhatsApp") }
+            TextButton(enabled = deviceId.isNotBlank(), onClick = onShareCode) { Text("Otra opción: enviar mi código por WhatsApp") }
         }
     }
     invite?.let { found ->

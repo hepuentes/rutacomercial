@@ -5,6 +5,15 @@ service cloud.firestore {
       // Equalities joined by || let Firestore prove that queries filtered by owner or worker are allowed.
       return request.auth != null && (request.auth.uid == task.owner || request.auth.uid == task.worker);
     }
+    // Short-lived codes so a worker can link without scanning. Readable only by exact code, never listed.
+    match /invites/{code} {
+      allow get: if request.auth != null && resource.data.expires > request.time;
+      allow create: if request.auth != null && request.resource.data.owner == request.auth.uid
+        && request.resource.data.keys().hasOnly(['owner', 'key', 'expires'])
+        && request.resource.data.key is string && request.resource.data.key.size() <= 400
+        && request.resource.data.expires is timestamp
+        && request.resource.data.expires < request.time + duration.value(2, 'h');
+    }
     // A worker scans the Owner's QR and publishes its own code and name under its uid.
     match /links/{workerId} {
       allow read: if member(resource.data);
@@ -30,13 +39,19 @@ service cloud.firestore {
     }
     match /tasks/{taskId} {
       allow read: if member(resource.data);
-      allow create: if request.auth != null && request.resource.data.owner == request.auth.uid
-        && request.resource.data.worker is string && request.resource.data.worker != request.auth.uid
-        && request.resource.data.worker.size() <= 128;
+      // The Owner sends a task, or a linked worker uploads a task it got by file, only towards its own Owner.
+      allow create: if request.auth != null && (
+        (request.resource.data.owner == request.auth.uid
+          && request.resource.data.worker is string && request.resource.data.worker != request.auth.uid
+          && request.resource.data.worker.size() <= 128)
+        || (request.resource.data.worker == request.auth.uid
+          && request.resource.data.owner is string
+          && exists(/databases/$(database)/documents/links/$(request.auth.uid))
+          && get(/databases/$(database)/documents/links/$(request.auth.uid)).data.owner == request.resource.data.owner));
       allow update: if request.auth.uid == resource.data.owner && request.resource.data == resource.data;
       match /parts/{part} {
         allow read: if member(get(/databases/$(database)/documents/tasks/$(taskId)).data);
-        allow write: if request.auth.uid == getAfter(/databases/$(database)/documents/tasks/$(taskId)).data.owner;
+        allow write: if member(getAfter(/databases/$(database)/documents/tasks/$(taskId)).data);
       }
       match /reports/{reportId} {
         function task() { return get(/databases/$(database)/documents/tasks/$(taskId)).data; }

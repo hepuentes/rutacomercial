@@ -135,6 +135,15 @@ internal class CloudSync(private val app: RutaApplication) {
         if (uid != device.value) { session?.cancel(); subscriptions.clear(); start() }
     }
 
+    /** Owner: back to an anonymous identity. Signing in again with the same Google account restores it. */
+    suspend fun signOutGoogle() {
+        FirebaseAuth.getInstance().signOut()
+        runCatching { androidx.credentials.CredentialManager.create(app).clearCredentialState(androidx.credentials.ClearCredentialStateRequest()) }
+        account.value = null
+        session?.cancel(); subscriptions.clear(); device.value = ""
+        start()
+    }
+
     /** Worker: trust the scanned Owner and tell it this phone's code and name. */
     fun link(invite: LinkInvite, name: String) {
         require(enabled && name.isNotBlank() && name.length <= 100)
@@ -189,7 +198,8 @@ internal class CloudSync(private val app: RutaApplication) {
             for ((key,value) in prefs.all.filterKeys { it.startsWith("send:") }) {
                 val id = key.substringAfter(':')
                 val task = JSONObject(local(id,"task").readText())
-                publish(db.collection("tasks").document(id), task, mapOf("owner" to uid,"worker" to value.toString()))
+                // Denied means the doc already exists: the linked worker uploaded this file task itself.
+                denied { publish(db.collection("tasks").document(id), task, mapOf("owner" to uid,"worker" to value.toString())) }
                 prefs.edit().remove(key).apply()
                 status.value = "Tarea sincronizada"
             }
@@ -200,6 +210,15 @@ internal class CloudSync(private val app: RutaApplication) {
                     "name" to prefs.getString("linkName", "").orEmpty(), "at" to FieldValue.serverTimestamp())).await()
                 prefs.edit().remove("linkPending").apply()
                 status.value = "✓ Vinculado con tu Owner"
+            }
+            if (owner != null && prefs.contains("linkName")) {
+                claimLocalTasks()
+                for (key in prefs.all.keys.filter { it.startsWith("claim:") }) {
+                    val id = key.substringAfter(':')
+                    denied { publish(db.collection("tasks").document(id), JSONObject(local(id,"task").readText()), mapOf("owner" to owner, "worker" to uid)) }
+                    prefs.edit().remove(key).apply()
+                    status.value = "Tareas sincronizadas con tu Owner"
+                }
             }
             for (key in prefs.all.keys.filter { it.startsWith("propose:") }) {
                 if (owner == null) break
@@ -222,12 +241,53 @@ internal class CloudSync(private val app: RutaApplication) {
                         val key = "sent:"+j.id
                         if (prefs.getString(key,null)==stamp && j.state!="ACTIVE") continue
                         val report = sessionReport(data,j,sessions,task)
-                        publish(db.collection("tasks").document(id).collection("reports").document(report.getString("id")), report, emptyMap())
+                        if (denied { publish(db.collection("tasks").document(id).collection("reports").document(report.getString("id")), report, emptyMap()) }) {
+                            prefs.edit().remove("linked:$id").apply(); break
+                        }
                         prefs.edit().putString(key,stamp).apply()
                         status.value = "Recorrido sincronizado"
                     }
                 }
         }
+    }
+
+    /** Runs a write; true when Firestore refused it for permissions (other errors still propagate to retry). */
+    private suspend fun denied(write: suspend () -> Unit): Boolean = try { write(); false }
+        catch (e: FirebaseFirestoreException) { if (e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) true else throw e }
+
+    /** Worker: tasks accepted from this Owner (by file or online) start syncing once the phone is linked. */
+    private fun claimLocalTasks() {
+        val key = assignmentPrefs.getString(OwnerIdentity.binding, null) ?: return
+        val edit = prefs.edit()
+        for (file in folder.listFiles().orEmpty().filter { it.extension == "task" }) {
+            val id = file.nameWithoutExtension
+            if (onlineTask(id)) continue
+            val task = runCatching { JSONObject(file.readText()) }.getOrNull() ?: continue
+            if (task.optString("ownerKey") != key || task.optString("id") != id) continue
+            edit.putBoolean("linked:$id", true).putBoolean("claim:$id", true)
+        }
+        edit.commit()
+    }
+
+    /** Owner: a short code the worker can type when they are not together to scan the QR. */
+    suspend fun createInvite(): String {
+        val alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        val random = java.security.SecureRandom()
+        val code = (1..6).map { alphabet[random.nextInt(alphabet.length)] }.joinToString("")
+        db.collection("invites").document(code).set(mapOf("owner" to device.first { it.isNotBlank() },
+            "key" to OwnerIdentity.publicKey(), "expires" to com.google.firebase.Timestamp(java.util.Date(System.currentTimeMillis() + 30 * 60_000L)))).await()
+        return code
+    }
+
+    /** Worker: resolves a typed code into the same invite the QR carries. */
+    suspend fun lookupInvite(raw: String): LinkInvite? {
+        val code = raw.uppercase().filter { it.isLetterOrDigit() }
+        if (code.length != 6) return null
+        val doc = try { db.collection("invites").document(code).get().await() }
+            catch (e: FirebaseFirestoreException) { if (e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) return null else throw e }
+        val owner = doc.getString("owner") ?: return null
+        val key = doc.getString("key") ?: return null
+        return parseLinkQr(linkQr(owner, key))
     }
 
     suspend fun flushPending() {
