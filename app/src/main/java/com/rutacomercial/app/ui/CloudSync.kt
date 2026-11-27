@@ -170,6 +170,10 @@ internal class CloudSync(private val app: RutaApplication) {
 
     /** True when the server confirmed this journey in its current state (the stamp starts with the state). */
     fun delivered(journeyId: String, state: String) = prefs.getString("sent:"+journeyId, null)?.startsWith("$state/") == true
+
+    /** While walking, "the Owner sees you" only holds if a progress report was confirmed in the last 2.5 minutes. */
+    fun deliveredRecently(journeyId: String, state: String) = delivered(journeyId, state) &&
+        (state != "ACTIVE" || System.currentTimeMillis() - prefs.getLong("sentAt:"+journeyId, 0L) < 150_000L)
     fun pending(): List<String> = prefs.all.keys.filter { it.startsWith("pending:") }.map { it.substringAfter(':') }
     fun accepted(id: String) {
         val edit = prefs.edit().remove("pending:"+id)
@@ -249,7 +253,7 @@ internal class CloudSync(private val app: RutaApplication) {
                         if (denied { publish(db.collection("tasks").document(id).collection("reports").document(report.getString("id")), report, emptyMap()) }) {
                             prefs.edit().remove("linked:$id").apply(); break
                         }
-                        prefs.edit().putString(key,stamp).apply()
+                        prefs.edit().putString(key,stamp).putLong("sentAt:"+j.id,System.currentTimeMillis()).apply()
                         status.value = "Recorrido sincronizado"
                     }
                 }
@@ -386,7 +390,7 @@ internal class CloudSync(private val app: RutaApplication) {
         check(prefs.edit().putString("proposer:"+doc.id, requireNotNull(doc.getString("worker"))).commit())
         save(file, proposal)
         status.value = "Propuesta recibida · "+proposal.getString("name")
-        Notifier.notify(app, "proposal:"+doc.id, "Propuesta de zona de "+proposal.getString("worker"), proposal.getString("name")+" · tocá para revisarla")
+        Notifier.notify(app, "proposal:"+doc.id, "Propuesta de zona de "+proposal.getString("worker"), proposal.getString("name")+" · tocá para revisarla") { putExtra("openProposal", doc.id) }
     }
 
     private fun digest(bytes: ByteArray) = android.util.Base64.encodeToString(MessageDigest.getInstance("SHA-256").digest(bytes),android.util.Base64.NO_WRAP)
