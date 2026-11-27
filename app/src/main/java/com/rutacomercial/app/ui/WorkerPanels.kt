@@ -20,7 +20,7 @@ private val Paused = Color(0xFF9A5B00)
 /** Compact so the map keeps most of the screen; still large enough to read while walking. */
 @Composable
 internal fun WorkerJourneyPanel(journey: Journey, gpsMessage: String, syncStatus: String?,
-    onPause: () -> Unit, onResume: () -> Unit, onFinish: () -> Unit) {
+    onPause: () -> Unit, onResume: () -> Unit, onFinish: () -> Unit, unpaidNote: String? = null) {
     val paused = journey.state == "PAUSED"
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(journey.state) { while (!paused) { now = System.currentTimeMillis(); delay(1000) } }
@@ -35,6 +35,7 @@ internal fun WorkerJourneyPanel(journey: Journey, gpsMessage: String, syncStatus
                 }
                 Text(number(journey.distanceM / 1000, 2) + " km", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             }
+            unpaidNote?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.tertiary) }
             val detail = listOfNotNull(syncStatus, gpsMessage.takeIf { it.isNotBlank() }).joinToString(" · ")
             if (detail.isNotEmpty()) Text(detail, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -57,7 +58,7 @@ internal fun WorkerJourneyPanel(journey: Journey, gpsMessage: String, syncStatus
 
 /** syncStatus null means the task travels by file, so the manual send stays. */
 @Composable
-internal fun WorkerFinishedPanel(journey: Journey, syncStatus: String?, onNewDay: (() -> Unit)?, onShare: () -> Unit) {
+internal fun WorkerFinishedPanel(journey: Journey, syncStatus: String?, onNewDay: (() -> Unit)?, onShare: () -> Unit, unpaidNote: String? = null) {
     Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceVariant) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.Bottom) {
@@ -67,6 +68,7 @@ internal fun WorkerFinishedPanel(journey: Journey, syncStatus: String?, onNewDay
                 }
                 Text(number(journey.distanceM / 1000, 2) + " km", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             }
+            unpaidNote?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.tertiary) }
             syncStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (syncStatus == null) FilledTonalButton(onClick = onShare, modifier = Modifier.weight(1f).heightIn(min = 52.dp)) { Text("Enviar recorrido") }
@@ -84,4 +86,29 @@ internal fun workerSyncText(delivered: Boolean, finished: Boolean): String = whe
     delivered && finished -> "✓ Enviado al Owner"
     delivered -> "✓ El Owner ve tu avance"
     else -> "Guardado en el teléfono · se envía apenas haya señal"
+}
+
+/** What the worker reads the first time, and anytime from Opciones: the rules the Owner pays by. */
+@Composable
+internal fun HowTimeCounts(onDismiss: () -> Unit, confirm: String = "Entendido") {
+    AlertDialog(onDismissRequest = onDismiss, title = { Text("Cómo se cuenta tu tiempo") }, text = {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("• Cuenta el tiempo que recorrés a pie con el recorrido activo.")
+            Text("• Las pausas no cuentan. Si pasás 20 minutos sin moverte, se pausa solo.")
+            Text("• Los tramos en vehículo (moto, auto, colectivo) no cuentan. Si dura más de 5 minutos, se pausa solo.")
+            Text("• Una app de ubicación falsa o cambiar la hora del teléfono no suma tiempo.")
+            Text("• Tu ubicación solo se registra mientras el recorrido está activo.")
+            Text("• Tu Owner ve exactamente lo mismo que ves vos.")
+        }
+    }, confirmButton = { Button(onClick = onDismiss) { Text(confirm) } })
+}
+
+/** "No cuentan: 8 min en vehículo · Pagable 1 h 32 min", or null when everything counts. */
+internal fun unpaidText(activeMs: Long, vehicleMs: Long, mockMs: Long, clockMs: Long): String? {
+    val parts = listOfNotNull(
+        minutes(vehicleMs).takeIf { vehicleMs >= 30_000 }?.let { "$it en vehículo" },
+        minutes(mockMs).takeIf { mockMs >= 30_000 }?.let { "$it con ubicación simulada" },
+        minutes(clockMs).takeIf { clockMs >= 30_000 }?.let { "$it por hora del teléfono" })
+    if (parts.isEmpty()) return null
+    return "No cuentan: " + parts.joinToString(", ") + " · Pagable " + hours((activeMs - vehicleMs - mockMs - clockMs).coerceAtLeast(0))
 }

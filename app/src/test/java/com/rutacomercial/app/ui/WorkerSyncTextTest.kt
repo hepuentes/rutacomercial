@@ -14,4 +14,9 @@ class WorkerSyncTextTest {
         assertEquals("0:00:52", clock(52_400))
         assertEquals("1:05:09", clock(3_909_000))
     }
+
+    @Test fun workerSeesWhatIsNotPaid() {
+        assertEquals(null, unpaidText(3_600_000, 0, 0, 0))
+        assertEquals("No cuentan: 8 min en vehículo · Pagable 0 h 52 min", unpaidText(3_600_000, 8 * 60_000L, 0, 0))
+    }
 }

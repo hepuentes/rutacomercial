@@ -67,3 +67,15 @@ El Owner recibe un aviso alrededor de las 20 h con km, horas y zonas por reparti
 En **Asignaciones**, el Owner escribe una vez el **valor de la hora**. Cada tarea guarda el valor vigente al asignarla (también al aceptar una propuesta o reasignar), así que cambiarlo después no altera tareas anteriores; dentro de la tarea se puede cambiar.
 
 El pago usa solo el **tiempo activo**, sin pausas, sumando todas las jornadas de la tarea: "0 h 12 min activos × $ 4.000 por hora = $ 851". Mientras la tarea no terminó dice "a la fecha". Cada tarea tiene **Pagado / Pendiente de pago** con la fecha, y Asignaciones muestra **Por pagar** con el total por repartidor y "Marcar todo como pagado". Los valores y marcas viajan en el respaldo cifrado. Solo los ve el Owner.
+
+## Medidas contra el fraude
+
+Sin permisos nuevos, cámara ni micrófono: todo sale del GPS de la jornada, y el Repartidor ve lo mismo que el Owner.
+
+- **Vehículo:** más de 15 km/h sostenidos un minuto (moto, auto, app de viajes, colectivo) es un tramo en vehículo. No suma km, cobertura ni tiempo pagable; los puntos registrados antes de confirmarlo se descartan. Inicio y fin se ajustan al primer y último paso rápido para no descontar la caminata de alrededor. Si dura más de 5 minutos, el recorrido se pausa solo con fecha en el inicio del tramo.
+- **GPS falso:** las ubicaciones que Android marca como simuladas no se registran y ese tiempo no se paga.
+- **Reloj:** el reloj del teléfono se compara cada 10 s con el reloj interno, que no se puede cambiar. Un adelanto no se paga; si después se corrige, se compensa. Al volver la hora atrás se corrige la marca de actividad para que una pausa posterior no conserve la hora falsa.
+- **Fuera de zona sin elegir:** el tiempo de las salidas que generaron aviso sin que el repartidor eligiera "Seguir fuera" se informa al Owner. No se descuenta.
+- **Transparencia:** la primera vez que inicia un recorrido, el Repartidor ve "Cómo se cuenta tu tiempo" (también en Opciones). En su panel ve "No cuentan: … · Pagable …". El Owner ve el mismo detalle en la tarjeta de Pago.
+
+Límite conocido: si el reloj se adelanta, se pausa con la hora adelantada y se vuelve atrás estando en pausa, ese tiempo queda descontado y el repartidor puede perder minutos hasta que la hora real alcance a la adelantada. Solo ocurre si se manipula la hora.

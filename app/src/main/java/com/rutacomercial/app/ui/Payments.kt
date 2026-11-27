@@ -13,8 +13,12 @@ internal fun money(value: Long): String = "$ " + String.format(Locale.forLanguag
 
 /** What is owed for one task. [finished] when its latest report is final. */
 internal data class Due(val taskId: String, val worker: String, val zone: String, val activeMs: Long,
-    val rate: Long, val finished: Boolean, val paidAt: Long?) {
-    val amount get() = fee(activeMs, rate)
+    val rate: Long, val finished: Boolean, val paidAt: Long?, val vehicleMs: Long = 0, val mockMs: Long = 0,
+    val clockMs: Long = 0, val outsideMs: Long = 0) {
+    val unpaidMs get() = vehicleMs + mockMs + clockMs
+    /** Active time minus riding, simulated location and clock jumps. */
+    val payableMs get() = (activeMs - unpaidMs).coerceAtLeast(0)
+    val amount get() = fee(payableMs, rate)
 }
 
 internal fun dues(tasks: List<WorkTask>, reports: List<WorkReport>, rateOf: (String) -> Long, paidOf: (String) -> Long?): List<Due> =
@@ -22,7 +26,8 @@ internal fun dues(tasks: List<WorkTask>, reports: List<WorkReport>, rateOf: (Str
         val mine = reports.filter { it.taskId == task.id }
         val rate = rateOf(task.id)
         if (mine.isEmpty() || rate <= 0) return@mapNotNull null
-        Due(task.id, task.worker, task.name, mine.sumOf { it.duration }, rate, mine.maxBy { it.updated }.state == "FINISHED", paidOf(task.id))
+        Due(task.id, task.worker, task.name, mine.sumOf { it.duration }, rate, mine.maxBy { it.updated }.state == "FINISHED", paidOf(task.id),
+            mine.sumOf { it.vehicleMs }, mine.sumOf { it.mockMs }, mine.sumOf { it.clockMs }, mine.sumOf { it.outsideMs })
     }
 
 /** Owner settings and paid marks live with the assignments, so the encrypted backup carries them. */
@@ -41,3 +46,5 @@ internal class PayBook(private val prefs: SharedPreferences) {
 }
 
 internal fun parseRate(text: String): Long = text.filter { it.isDigit() }.take(9).toLongOrNull() ?: 0L
+
+internal fun minutes(ms: Long): String = "${(ms + 30_000) / 60_000} min"

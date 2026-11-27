@@ -127,6 +127,14 @@ class AssignmentActivity : TrackingMapActivity() {
         val zone=remember(id,revision) { id?.let { read(it,"task") } }
         val work=zoneWork(revision)
         val pay=remember { PayBook(prefs) }
+        val ledger=remember { com.rutacomercial.app.tracking.AntiFraudLedger(this) }
+        fun unpaidNote(j:Journey)=unpaidText(j.activeDuration(System.currentTimeMillis()),
+            ledger.get(j.id,"vehicle"),ledger.get(j.id,"mock"),ledger.clock(j.id))
+        var explainTime by remember { mutableStateOf<String?>(null) }
+        explainTime?.let { pending -> HowTimeCounts(onDismiss={
+            prefs.edit().putBoolean("explainedTime",true).apply(); explainTime=null
+            if(pending=="start") action("start")
+        },confirm=if(pending=="start") "Entendido · iniciar" else "Entendido") }
         var payTick by remember { mutableIntStateOf(0) }
         val taskReports=remember(work,id) { work.reports.filter { it.taskId==id } }
         val result=remember(id,revision,taskReports) { (taskReports.firstOrNull()?.id ?: id)?.let { read(it,"result") ?: read(it,"received")?.takeIf { doc -> doc.optString("kind")=="result" } } }
@@ -604,13 +612,13 @@ class AssignmentActivity : TrackingMapActivity() {
                     tracking.locationProblem?.let { Text(it,style=MaterialTheme.typography.bodySmall) }
                     fun sendReport(journey:Journey) {
                         runCatching {
-                            val doc=sessionReport(data,journey,sessions,zone)
+                            val doc=sessionReport(data,journey,sessions,zone).withAntiFraud(this@AssignmentActivity,journey.id)
                             val prior=JSONArray()
                             var bytes=doc.toString().toByteArray().size+64
                             val byId=data.journeys.associateBy { it.id }
                             for(key in sessions.takeWhile { it!=journey.id }.asReversed()) {
                                 val earlier=byId[key] ?: continue
-                                val entry=sessionReport(data,earlier,sessions,zone)
+                                val entry=sessionReport(data,earlier,sessions,zone).withAntiFraud(this@AssignmentActivity,earlier.id)
                                 val size=entry.toString().toByteArray().size+1
                                 if(bytes+size>5_000_000) {
                                     android.widget.Toast.makeText(this@AssignmentActivity,"Las jornadas más antiguas se pueden enviar desde Historial.",android.widget.Toast.LENGTH_LONG).show()
@@ -642,6 +650,7 @@ class AssignmentActivity : TrackingMapActivity() {
                             TextButton(onClick={options=false;nav.startZone(zone.optString("name"),polygon)}) { Text("Cómo llegar a la zona") }
                             TextButton(onClick={options=false;nav.search=true}) { Text("Buscar un lugar") }
                             TextButton(onClick={options=false;drawingProposal=true}) { Text("Proponer zona") }
+                            TextButton(onClick={options=false;explainTime="info"}) { Text("Cómo se cuenta mi tiempo") }
                             DarkMapSwitch()
                             TextButton(onClick={options=false;sharedText=""}) { Text("Traer ubicación de Google Maps") }
                             TextButton(onClick={options=false;consultGoogleMap(this@AssignmentActivity,position ?: polygon.firstOrNull())}) { Text("Consultar en Google Maps") }
@@ -656,10 +665,12 @@ class AssignmentActivity : TrackingMapActivity() {
                             Text("Pedile al Owner que vuelva a compartir esta tarea para vincularla.")
                         journey==null -> {
                             // Arriving is the moment to start: the button says so and the phone buzzes once.
-                            val arrived=position!=null && boundaryPoint==null
+                            val arrived=position!=null && com.rutacomercial.app.tracking.ZoneWatch.outsideMeters(
+                                polygon.map { it.latitude to it.longitude },position.latitude,position.longitude)<=40.0
                             val ctx=androidx.compose.ui.platform.LocalContext.current
                             LaunchedEffect(arrived) { if(arrived) runCatching { ctx.getSystemService(android.os.Vibrator::class.java)?.vibrate(android.os.VibrationEffect.createOneShot(250,android.os.VibrationEffect.DEFAULT_AMPLITUDE)) } }
-                            Button(onClick={prefs.edit().putString("selected",id).commit();action("start")},modifier=Modifier.fillMaxWidth().heightIn(min=64.dp),
+                            Button(onClick={prefs.edit().putString("selected",id).commit()
+                                    if(prefs.getBoolean("explainedTime",false)) action("start") else explainTime="start" },modifier=Modifier.fillMaxWidth().heightIn(min=64.dp),
                                 colors=if(arrived) ButtonDefaults.buttonColors(containerColor=androidx.compose.ui.graphics.Color(0xFF1B6B3A)) else ButtonDefaults.buttonColors()) {
                                 Text(if(arrived) "Llegaste · Iniciar recorrido" else "Iniciar recorrido",fontSize=20.sp)
                             }
@@ -677,7 +688,8 @@ class AssignmentActivity : TrackingMapActivity() {
                                     Text("Proponer lo recorrido fuera como zona") }
                             }
                             WorkerFinishedPanel(journey,if(cloud.onlineTask(zone.getString("id"))) workerSyncText(cloud.delivered(journey.id,journey.state),true) else null,
-                                onNewDay=if(busyJourney==null && trustedZone && historyJourney==null) ({ confirmNew=true }) else null,onShare={sendReport(journey)})
+                                onNewDay=if(busyJourney==null && trustedZone && historyJourney==null) ({ confirmNew=true }) else null,onShare={sendReport(journey)},
+                                unpaidNote=unpaidNote(journey))
                             if(busyJourney==null && trustedZone) {
                                 if(confirmNew) AlertDialog(onDismissRequest={confirmNew=false},title={Text("¿Iniciar otra jornada?")},
                                     text={Text("El recorrido anterior queda guardado con sus marcas. El tiempo y la distancia de la nueva jornada empiezan en cero.")},
@@ -706,7 +718,7 @@ class AssignmentActivity : TrackingMapActivity() {
                             }
                             WorkerJourneyPanel(journey,tracking.message,if(cloud.onlineTask(zone.getString("id"))) workerSyncText(cloud.deliveredRecently(journey.id,journey.state),false) else null,
                             onPause={TrackingController.pause(this@AssignmentActivity)},onResume={action("resume")},
-                            onFinish={TrackingController.finish(this@AssignmentActivity)})
+                            onFinish={TrackingController.finish(this@AssignmentActivity)},unpaidNote=unpaidNote(journey))
                         }
                     }
                 } else {
@@ -751,13 +763,20 @@ class AssignmentActivity : TrackingMapActivity() {
                                 pay.rate(id!!)<=0 -> TextButton(onClick={editRate=true}) { Text("Definir valor de la hora") }
                                 due==null -> Text("${money(pay.rate(id!!))} por hora · todavía sin tiempo registrado",style=MaterialTheme.typography.bodySmall)
                                 else -> {
-                                    Text("${hours(due.activeMs)} activos × ${money(due.rate)} por hora",style=MaterialTheme.typography.bodySmall)
+                                    if(due.unpaidMs>0) {
+                                        Text("${hours(due.activeMs)} activos",style=MaterialTheme.typography.bodySmall)
+                                        if(due.vehicleMs>0) Text("− ${minutes(due.vehicleMs)} en vehículo",style=MaterialTheme.typography.bodySmall)
+                                        if(due.mockMs>0) Text("− ${minutes(due.mockMs)} con ubicación simulada",style=MaterialTheme.typography.bodySmall)
+                                        if(due.clockMs>0) Text("− ${minutes(due.clockMs)} por hora del teléfono adelantada",style=MaterialTheme.typography.bodySmall)
+                                    }
+                                    Text("${hours(due.payableMs)} pagables × ${money(due.rate)} por hora",style=MaterialTheme.typography.bodySmall)
                                     Text(money(due.amount)+if(due.finished) "" else " · a la fecha",style=MaterialTheme.typography.headlineSmall)
                                     Row(Modifier.fillMaxWidth().heightIn(min=48.dp).toggleable(value=due.paidAt!=null,role=androidx.compose.ui.semantics.Role.Switch) {
                                         pay.setPaid(id!!,it);payTick++ },verticalAlignment=Alignment.CenterVertically) {
                                         Switch(due.paidAt!=null,null)
                                         Text(if(due.paidAt!=null) "Pagado · "+java.text.SimpleDateFormat("dd/MM/yyyy",java.util.Locale.ROOT).format(java.util.Date(due.paidAt)) else "Pendiente de pago",Modifier.padding(start=8.dp))
                                     }
+                                    if(due.outsideMs>0) Text("Fuera de la zona sin avisar: ${minutes(due.outsideMs)} (no se descuenta)",style=MaterialTheme.typography.bodySmall)
                                     TextButton(onClick={editRate=true}) { Text("Cambiar valor de la hora") }
                                 }
                             }

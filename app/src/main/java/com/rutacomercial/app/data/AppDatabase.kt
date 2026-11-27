@@ -65,6 +65,7 @@ abstract class AppDao {
     @Insert abstract suspend fun putRouteStop(value: RouteStop)
     @Insert abstract suspend fun putAudit(value: AuditEvent)
     @Query("DELETE FROM route_stops") abstract suspend fun clearRoute()
+    @Query("DELETE FROM track_points WHERE journeyId=:journeyId AND at >= :since") abstract suspend fun deletePointsSince(journeyId: String, since: Long): Int
     @Query("DELETE FROM track_points WHERE at < :cutoff AND journeyId IN (SELECT id FROM journeys WHERE state='FINISHED')") abstract suspend fun deleteOldTracks(cutoff: Long): Int
     @Transaction open suspend fun snapshot(): DataSnapshot = DataSnapshot(areas(), sectors(), sectorRevisions(), businesses(), campaigns(), visits(), movements(), journeys(), points(), incidents(), routeStops(), audit(), quickDeliveries())
 }

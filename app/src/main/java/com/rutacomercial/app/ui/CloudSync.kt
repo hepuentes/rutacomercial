@@ -260,7 +260,7 @@ internal class CloudSync(private val app: RutaApplication) {
                             data.audit.count { it.entityId==j.id },data.incidents.count { it.journeyId==j.id }).joinToString("/")
                         val key = "sent:"+j.id
                         if (prefs.getString(key,null)==stamp && j.state!="ACTIVE") continue
-                        val report = sessionReport(data,j,sessions,task)
+                        val report = sessionReport(data,j,sessions,task).withAntiFraud(app, j.id)
                         if (denied { publish(db.collection("tasks").document(id).collection("reports").document(report.getString("id")), report, emptyMap()) }) {
                             prefs.edit().remove("linked:$id").apply(); break
                         }

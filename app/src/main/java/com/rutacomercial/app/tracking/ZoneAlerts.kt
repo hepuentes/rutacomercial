@@ -29,6 +29,8 @@ import kotlin.math.hypot
 internal class ZoneWatch(private val band: Double = 40.0, private val far: Double = 250.0,
     private val nearDelayMs: Long = 180_000L, private val farDelayMs: Long = 45_000L, private val donePercent: Int = 90) {
     private var outsideSince: Long? = null
+    /** When the current stretch beyond the tolerance began, if any. */
+    val outsideStartedAt: Long? get() = outsideSince
     var warnedOutside = false; private set
     var warnedDone = false; private set
     /** The worker chose to keep working outside: no more exit warnings this journey. */
@@ -75,6 +77,16 @@ internal class ZoneAlerts(private val context: Context, private val repository: 
     private var watch = ZoneWatch()
     private var coverageAt = 0L
     private val prefs = context.getSharedPreferences("zone_alerts", Context.MODE_PRIVATE)
+    private val ledger = AntiFraudLedger(context)
+    /** Start of a warned exit the worker has not answered; that time is shown to the Owner. */
+    private var warnedFrom: Long? = null
+
+    private fun closeWarned(now: Long) {
+        val id = journeyId ?: return
+        warnedFrom?.let { ledger.add(id, AntiFraudLedger.OUTSIDE, now - it) }
+        warnedFrom = null
+    }
+    suspend fun flush(now: Long) { closeWarned(now) }
 
     suspend fun check(latitude: Double, longitude: Double, now: Long) {
         val journey = repository.currentJourney() ?: return
@@ -82,12 +94,13 @@ internal class ZoneAlerts(private val context: Context, private val repository: 
         if (polygon.size < 3) return
         when (watch.position(ZoneWatch.outsideMeters(polygon, latitude, longitude), now)) {
             "out" -> {
+                warnedFrom = watch.outsideStartedAt ?: now
                 vibrate()
                 repository.addIncident("Fuera de la zona $name por más tiempo que la tolerancia", journey.id, "OUTSIDE_ZONE")
                 TrackingRuntime.mutable.update { it.copy(outsideZone = name) }
                 notify(OUT_ID, "Saliste de la zona", "$name · volvé al borde marcado, o seguí fuera si elegiste otra parte", outsideAction = true)
             }
-            "back" -> { manager().cancel(OUT_ID); TrackingRuntime.mutable.update { it.copy(outsideZone = null) } }
+            "back" -> { closeWarned(now); manager().cancel(OUT_ID); TrackingRuntime.mutable.update { it.copy(outsideZone = null) } }
         }
         if (now - coverageAt >= 120_000L) {
             coverageAt = now
@@ -102,6 +115,7 @@ internal class ZoneAlerts(private val context: Context, private val repository: 
         val journey = repository.currentJourney() ?: return
         if (journey.id != journeyId) load(journey.id)
         if (watch.accepted) return
+        closeWarned(System.currentTimeMillis())
         watch.accepted = true
         prefs.edit().putBoolean(journey.id, true).apply()
         repository.addIncident("Decidió seguir el recorrido fuera de la zona $name", journey.id, "OUTSIDE_OK")
@@ -110,7 +124,7 @@ internal class ZoneAlerts(private val context: Context, private val repository: 
     }
 
     private suspend fun load(id: String) {
-        journeyId = id; polygon = emptyList(); name = ""; watch = ZoneWatch(); coverageAt = 0L
+        journeyId = id; polygon = emptyList(); name = ""; watch = ZoneWatch(); coverageAt = 0L; warnedFrom = null
         watch.accepted = prefs.getBoolean(id, false)
         TrackingRuntime.mutable.update { it.copy(outsideZone = null) }
         val audit = repository.dao.audit().filter { it.entityId == id }

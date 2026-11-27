@@ -28,6 +28,13 @@ class PaymentsTest {
         assertEquals(false, list.first { it.taskId == "t2" }.finished)
     }
 
+    @Test fun ridingSimulatedLocationAndClockJumpsAreNotPaid() {
+        val d = Due("t", "Pedro", "Zona", activeMs = 2 * 3_600_000L, rate = 4_000, finished = true, paidAt = null,
+            vehicleMs = 10 * 60_000L, mockMs = 5 * 60_000L, clockMs = 15 * 60_000L, outsideMs = 20 * 60_000L)
+        assertEquals(90 * 60_000L, d.payableMs)          // outside is shown, not deducted
+        assertEquals(6_000, d.amount)
+    }
+
     @Test fun rateInputKeepsDigitsOnly() {
         assertEquals(4_000, parseRate("$ 4.000"))
         assertEquals(0, parseRate(""))
