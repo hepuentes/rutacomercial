@@ -472,6 +472,7 @@ class AssignmentActivity : TrackingMapActivity() {
                         Text(number(report.getDouble("meters")/1000,2)+" km · "+hours(report.getLong("duration")))
                         val duration=report.getLong("duration")
                         if(duration>0) Text("Velocidad media · "+number(report.getDouble("meters")*3600/duration,2)+" km/h")
+                        gpsSummary(report)?.let { Text("Diagnóstico GPS · $it",style=MaterialTheme.typography.bodySmall) }
                         var details by remember(reportId) { mutableStateOf(false) }
                         FilledTonalButton(onClick={details=true}) { Text("Ver trazabilidad") }
                         if(details) AlertDialog(onDismissRequest={details=false},title={Text("Trazabilidad del recorrido")},text={
@@ -776,7 +777,7 @@ class AssignmentActivity : TrackingMapActivity() {
                             }
                         },confirmButton={TextButton(onClick={reassign=false}) { Text("Cancelar") }})
                     }
-                    else if(cloud.enabled) {
+                    else if(cloud.enabled && !online) {
                         var targetDevice by remember(id) { mutableStateOf(cloud.recipient(zone.getString("worker"))) }
                         Text(onlineStatus,style=MaterialTheme.typography.labelMedium)
                         Field("Código del teléfono",targetDevice,{targetDevice=deviceCode(it)})

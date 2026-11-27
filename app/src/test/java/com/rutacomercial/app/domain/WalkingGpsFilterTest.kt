@@ -72,12 +72,20 @@ class WalkingGpsFilterTest {
         assertEquals(18.0, persisted.distanceM, 0.1)
         assertTrue("Without live continuity, the repository must still separate a real gap", GpsPolicy.evaluate(fix(0.0, 6), fix(18.0, 138)).breakSegment)
     }
+    @Test fun burstyDeliveryKeepsAWalkableReadingAfterAPause() {
+        val filter = WalkingGpsFilter(); ready(filter)
+        val short = filter.evaluate(fix(100.0, 80))                       // 74 s, ~1,3 m/s
+        assertTrue(short.accepted); assertFalse(short.breakSegment)
+        val long = filter.evaluate(fix(300.0, 260))                       // 180 s, ~1,1 m/s: kept, line broken
+        assertTrue(long.accepted); assertTrue(long.breakSegment)
+        assertTrue(filter.evaluate(fix(300.0, 266)).let { !it.accepted })  // standing still after it is not a walk
+    }
     @Test fun gapAndResumeRequireFreshFixes() {
         val filter = WalkingGpsFilter(); ready(filter)
-        val gap = filter.evaluate(fix(100.0, 80))
+        val gap = filter.evaluate(fix(1000.0, 80))                        // 1 km in 74 s is not walking
         assertFalse(gap.accepted); assertTrue(gap.breakSegment)
-        assertFalse(filter.evaluate(fix(100.0, 84)).accepted)
-        assertTrue(filter.evaluate(fix(100.0, 88)).accepted)
+        assertFalse(filter.evaluate(fix(1000.0, 84)).accepted)
+        assertTrue(filter.evaluate(fix(1000.0, 88)).accepted)
         filter.reset()
         assertFalse(filter.evaluate(fix(400.0, 92)).accepted)
     }

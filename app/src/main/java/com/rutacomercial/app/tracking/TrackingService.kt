@@ -288,7 +288,7 @@ class TrackingService : Service(), LocationListener {
         check(manager.isProviderEnabled(LocationManager.GPS_PROVIDER)) { "Activá Ubicación en Android antes de iniciar el recorrido." }
         listening = true
         observations.reset()
-        walkingFilter.reset()
+        walkingFilter.reset(); lastReceivedNanos = 0L
         generation++
         lastFixElapsed = android.os.SystemClock.elapsedRealtime()
         idle.start(System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime())
@@ -315,6 +315,7 @@ class TrackingService : Service(), LocationListener {
     private val clock = com.rutacomercial.app.domain.ClockWatch()
     private val ledger by lazy { AntiFraudLedger(this) }
     private var mockSince: Long? = null
+    private var lastReceivedNanos = 0L
 
     /** Closes a ride, a simulated-location stretch or an unanswered exit that is still open at pause or finish. */
     private suspend fun closeOpenIntervals(now: Long) {
@@ -391,7 +392,18 @@ class TrackingService : Service(), LocationListener {
             serial.withLock {
                 if (!listening || generation != observedGeneration) return@withLock
                 try {
-                    if (android.os.SystemClock.elapsedRealtimeNanos() - fix.elapsedRealtimeNanos !in 0..15_000_000_000L || kotlin.math.abs(System.currentTimeMillis() - fix.at) > 30_000L) return@withLock
+                    val diagJourney = repository.currentJourney()?.id
+                    if (android.os.SystemClock.elapsedRealtimeNanos() - fix.elapsedRealtimeNanos !in 0..15_000_000_000L || kotlin.math.abs(System.currentTimeMillis() - fix.at) > 30_000L) {
+                        diagJourney?.let { ledger.count(it, AntiFraudLedger.STALE) }
+                        return@withLock
+                    }
+                    diagJourney?.let { j ->
+                        ledger.count(j, AntiFraudLedger.FIXES)
+                        val pause = if (lastReceivedNanos == 0L) 0L else (fix.elapsedRealtimeNanos - lastReceivedNanos) / 1_000_000
+                        if (pause > WalkingGpsFilter.SIGNAL_GAP_MS) { ledger.count(j, AntiFraudLedger.GAPS); ledger.max(j, AntiFraudLedger.MAX_GAP, pause) }
+                        if (!fix.accuracyMeters.isFinite() || fix.accuracyMeters > 25f) ledger.count(j, AntiFraudLedger.IMPRECISE)
+                    }
+                    lastReceivedNanos = fix.elapsedRealtimeNanos
                     // The blue dot can be approximate; the stored walking trace keeps stricter gates.
                     if (LocationPreview.usable(location)) TrackingRuntime.mutable.update {
                         it.copy(position = MapCoordinate(fix.latitude, fix.longitude), accuracyMeters = fix.accuracyMeters, fixAt = fix.at, locationProblem = null)
@@ -436,6 +448,7 @@ class TrackingService : Service(), LocationListener {
                     }
                     val result = repository.recordLocation(fix, signalContinuous = !filtered.breakSegment)
                     if (result.accepted) {
+                        diagJourney?.let { ledger.count(it, AntiFraudLedger.USED) }
                         idle.moved(fix.latitude, fix.longitude, fix.at, fix.elapsedRealtimeNanos / 1_000_000)
                         runCatching { zoneAlerts.check(fix.latitude, fix.longitude, System.currentTimeMillis()) }
                         lastFixElapsed = android.os.SystemClock.elapsedRealtime()
