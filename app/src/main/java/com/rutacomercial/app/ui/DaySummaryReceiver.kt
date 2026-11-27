@@ -18,7 +18,7 @@ class DaySummaryReceiver : BroadcastReceiver() {
         val workers = workersToday(ZoneWork.read(File(context.filesDir, "assignments")).reports, since)
         if (workers.isEmpty()) return
         Notifier.notify(context, "summary:" + LocalDate.now(), "Resumen del día",
-            daySummary(workers).removePrefix("Resumen de hoy\n")) { putExtra("openToday", true) }
+            daySummary(workers).removePrefix("Resumen de hoy\n"), urgent = false) { putExtra("openToday", true) }
     }
 
     companion object {

@@ -33,6 +33,7 @@ internal fun MapScreen(vm: RutaViewModel, data: DataSnapshot, tracking: Tracking
     selectedJourneyId: String?, focus: MapCoordinate?, onStart: () -> Unit, onPause: () -> Unit, onResume: () -> Unit,
     onFinish: () -> Unit, onBusiness: (String) -> Unit, onLive: () -> Unit, onLocate: () -> Unit, onPointSelected: (MapCoordinate) -> Unit,
     zoneRequest: ZoneRequest? = null, onZoneRequestConsumed: () -> Unit = {}, onImportLocation: () -> Unit = {}) {
+    val ownerEdition = !com.rutacomercial.app.BuildConfig.WORKER_EDITION
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("map_workspace", Context.MODE_PRIVATE) }
     var sectorId by rememberSaveable { mutableStateOf(prefs.getString("sector", null)) }
@@ -81,7 +82,7 @@ internal fun MapScreen(vm: RutaViewModel, data: DataSnapshot, tracking: Tracking
                 MapTrack("${key.first}-${key.second}", sorted.map { MapCoordinate(it.latitude,it.longitude) }, if (sorted.last().at < today && key.first != journey?.id) "#8C8599" else "#374BD4",group=key.first)
             }
     }
-    val visibleReports=if(allZones || editing) work.reports else reports
+    val visibleReports=if(allZones || editing) work.reports.filter { it.taskId !in work.closed } else reports
     val mapLines = remember(tracks,visibleReports,selectedJourneyId) {
         if(selectedJourneyId==null) visibleReports.flatMap { it.lines }+tracks else tracks
     }
@@ -239,10 +240,12 @@ internal fun MapScreen(vm: RutaViewModel, data: DataSnapshot, tracking: Tracking
                             when {
                                 latestReport!=null -> context.startActivity(Intent(context,AssignmentActivity::class.java).putExtra("reportId",latestReport.id))
                                 latestTask!=null || sector?.status=="COMPLETED" || personal.isNotEmpty() -> sheet="continue"
+                                // The Owner plans and audits; walking it personally stays in Opciones.
+                                ownerEdition -> if (sector == null) sheet = "zones" else context.startActivity(Intent(context,AssignmentActivity::class.java).putExtra("sector",sector.id))
                                 else -> onStart()
                             }
                         }, enabled = !busy, modifier = Modifier.weight(1.3f)) {
-                            Text(when { latestReport!=null -> "Ver informe"; latestTask!=null -> "Ver asignación"; sector?.status=="COMPLETED" || personal.isNotEmpty() -> "Continuar zona"; else -> "Empezar recorrido" })
+                            Text(when { latestReport!=null -> "Ver informe"; latestTask!=null -> "Ver asignación"; sector?.status=="COMPLETED" || personal.isNotEmpty() -> "Continuar zona"; ownerEdition -> "Asignar zona"; else -> "Empezar recorrido" })
                         }
                     } else Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         FilledTonalButton(onClick = if(journey.state == "ACTIVE") onPause else onResume, modifier = Modifier.weight(1f)) { Text(if(journey.state == "ACTIVE") "Pausar" else "Reanudar") }
@@ -360,6 +363,7 @@ internal fun MapScreen(vm: RutaViewModel, data: DataSnapshot, tracking: Tracking
                                 vm.message("Borde sugerido según lo recorrido. Ajustalo a mano o con rectángulo y tocá Usar esta zona.") }
                         },modifier=Modifier.fillMaxWidth()) { Text("Ajustar zona a lo recorrido") }
                         TextButton(onClick={sheet="continue"}) { Text("Continuar esta zona") }
+                        if (ownerEdition && journey == null) TextButton(onClick={sheet=null;onStart()}) { Text("Recorrerla yo") }
                         TextButton(onClick={sheet="remove"}) { Text("Eliminar zona del mapa") }
                         TextButton(onClick = { renamedZone = s.name; rename = true; sheet = null }) { Text("Cambiar nombre de la zona") }
                         val registered = data.visibleBusinesses.filter { it.sectorId == s.id }

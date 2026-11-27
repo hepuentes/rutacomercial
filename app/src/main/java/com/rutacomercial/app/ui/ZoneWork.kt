@@ -32,8 +32,15 @@ internal data class WorkReport(val id: String, val taskId: String, val name: Str
     val unpaidMs get() = vehicleMs + mockMs + clockMs
 }
 
-internal data class ZoneWork(val tasks: List<WorkTask> = emptyList(), val reports: List<WorkReport> = emptyList(), val loaded: Boolean = false) {
-    fun tasksFor(zone: Sector, zones: List<Sector>) = tasks.filter { it.belongsTo(zone, zones) }
+internal data class ZoneWork(val tasks: List<WorkTask> = emptyList(), val reports: List<WorkReport> = emptyList(), val loaded: Boolean = false,
+    /** Task id to the name of the closed campaign it belongs to. Closed tasks leave the map but keep their reports and payments. */
+    val closed: Map<String, String> = emptyMap()) {
+    /** Only the current campaign: what the map, zone states and the guide work with. */
+    fun tasksFor(zone: Sector, zones: List<Sector>) = tasks.filter { it.id !in closed && it.belongsTo(zone, zones) }
+    /** Finished and not yet closed: what "Cerrar campaña" archives. A task still being walked stays open. */
+    fun closable(): List<WorkTask> = tasks.filter { t ->
+        t.id !in closed && reports.filter { it.taskId == t.id }.let { mine -> mine.isNotEmpty() && mine.all { it.state == "FINISHED" } }
+    }
     fun label(zone: Sector, zones: List<Sector>): String {
         if(zone.status=="COMPLETED") return "Zona completada"
         val task=tasksFor(zone,zones).firstOrNull() ?: return sectorState(zone.status)
@@ -71,7 +78,7 @@ internal data class ZoneWork(val tasks: List<WorkTask> = emptyList(), val report
                         obj.optLong("capturedAt", file.lastModified()), outsideChosen(obj),
                         obj.optLong("vehicleMs"), obj.optLong("mockMs"), obj.optLong("clockMs"), obj.optLong("outsideMs"))
                 }.getOrNull() }.sortedByDescending { it.at }
-            return ZoneWork(tasks, reports, loaded = true)
+            return ZoneWork(tasks, reports, loaded = true, closed = Campaigns.read(folder))
         }
     }
 }
@@ -195,4 +202,21 @@ internal fun zoneWork(revision: Int = 0): ZoneWork {
         }
     }
     return work
+}
+
+/** Closed campaigns, kept next to the tasks so backups carry them. */
+internal object Campaigns {
+    private fun file(folder: File) = File(folder, "campaigns.json")
+    fun read(folder: File): Map<String, String> = runCatching {
+        val o = JSONObject(file(folder).readText())
+        o.keys().asSequence().associateWith { o.getString(it) }
+    }.getOrDefault(emptyMap())
+
+    fun close(folder: File, name: String, taskIds: Collection<String>) {
+        val o = JSONObject(read(folder))
+        taskIds.forEach { o.put(it, name) }
+        val tmp = File(folder, "campaigns.json.tmp")
+        tmp.writeText(o.toString())
+        java.nio.file.Files.move(tmp.toPath(), file(folder).toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+    }
 }
