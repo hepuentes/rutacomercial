@@ -128,6 +128,9 @@ class AssignmentActivity : TrackingMapActivity() {
         val result=remember(id,revision,taskReports) { (taskReports.firstOrNull()?.id ?: id)?.let { read(it,"result") ?: read(it,"received")?.takeIf { doc -> doc.optString("kind")=="result" } } }
         val ids=remember(revision) { directory.listFiles().orEmpty().filter { it.extension=="task" }.sortedByDescending { it.lastModified() }.map { it.nameWithoutExtension } }
         val polygon=remember(zone) { zone?.let(::geometry).orEmpty() }
+        LaunchedEffect(zone?.optString("id")) {
+            zone?.let { z -> if(worker) runCatching { OfflineZones.ensure(this@AssignmentActivity,"task:"+z.getString("id"),polygon,z.optString("name")) } }
+        }
         val trustedZone=remember(zone,revision) { worker && zone!=null && zone.optString("ownerKey")==prefs.getString(OwnerIdentity.binding,null) && OwnerIdentity.verified(zone) }
 
         val sessions=remember(data.audit,id) { data.audit.filter { it.action=="ASSIGNMENT" && it.detail==id }.map { it.entityId } }
@@ -231,6 +234,20 @@ class AssignmentActivity : TrackingMapActivity() {
         var referenceLat by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<Double?>(null) }
         var referenceLon by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<Double?>(null) }
         var referenceRequest by androidx.compose.runtime.saveable.rememberSaveable { mutableIntStateOf(0) }
+        /** A new task for a saved zone, carrying earlier tracks and marks so the next worker continues where the last one stopped. */
+        fun buildTask(selected:Sector,personName:String,noteText:String):JSONObject {
+            val o=JSONObject().put("version",1).put("kind","task").put("id",newId()).put("worker",personName).put("name",selected.name).put("polygon",selected.polygonJson).put("note",noteText).put("sectorId",selected.id)
+            val prior=work.reportsFor(work.tasksFor(selected,data.sectors)).flatMap { it.lines } +
+                previousJourneys(data,selected.id).flatMap { mapTracks(data,it) }
+            val pins=work.reportsFor(work.tasksFor(selected,data.sectors)).flatMap { it.marks } +
+                previousJourneys(data,selected.id).flatMap { journeyMarks(data,it) }
+            if(pins.isNotEmpty()) o.put("previousEvents",encodedMarks(pins).toString())
+            if(prior.isNotEmpty()) {
+                o.put("previousSegments",previousSegments(prior).toString())
+                o.put("previousGroups",JSONArray(prior.filter { it.points.size>=2 }.map { it.group }).toString())
+            }
+            return o
+        }
         fun proposeAt(p:MapCoordinate) {
             referenceLat=p.latitude;referenceLon=p.longitude;referenceRequest++;drawingProposal=true
         }
@@ -239,6 +256,7 @@ class AssignmentActivity : TrackingMapActivity() {
         }
         LaunchedEffect(incomingRequest) {
             // Opened from a notice: go straight to what it announced.
+            if(!worker && intent.getBooleanExtra("openToday",false)) { intent.removeExtra("openToday"); startActivity(Intent(this@AssignmentActivity,TodayActivity::class.java)) }
             if(!worker) {
                 intent.getStringExtra("openProposal")?.let { key -> runCatching { read(key,"proposal") }.getOrNull()?.let { incoming=it;id=null;reportId=null } }
                 intent.getStringExtra("taskId")?.takeIf { runCatching { UUID.fromString(it) }.isSuccess }?.let { if(incomingRequest>0) { id=it;reportId=null } }
@@ -631,7 +649,16 @@ class AssignmentActivity : TrackingMapActivity() {
                         busyJourney!=null && busyJourney?.id!=journeyId -> { Text("Terminá el recorrido anterior para iniciar esta tarea."); Button(onClick={TrackingController.finish(this@AssignmentActivity)}) { Text("Terminar recorrido anterior") } }
                         journey==null && !trustedZone ->
                             Text("Pedile al Owner que vuelva a compartir esta tarea para vincularla.")
-                        journey==null -> Button(onClick={prefs.edit().putString("selected",id).commit();action("start")},modifier=Modifier.fillMaxWidth().heightIn(min=64.dp)) { Text("Iniciar recorrido",fontSize=20.sp) }
+                        journey==null -> {
+                            // Arriving is the moment to start: the button says so and the phone buzzes once.
+                            val arrived=position!=null && boundaryPoint==null
+                            val ctx=androidx.compose.ui.platform.LocalContext.current
+                            LaunchedEffect(arrived) { if(arrived) runCatching { ctx.getSystemService(android.os.Vibrator::class.java)?.vibrate(android.os.VibrationEffect.createOneShot(250,android.os.VibrationEffect.DEFAULT_AMPLITUDE)) } }
+                            Button(onClick={prefs.edit().putString("selected",id).commit();action("start")},modifier=Modifier.fillMaxWidth().heightIn(min=64.dp),
+                                colors=if(arrived) ButtonDefaults.buttonColors(containerColor=androidx.compose.ui.graphics.Color(0xFF1B6B3A)) else ButtonDefaults.buttonColors()) {
+                                Text(if(arrived) "Llegaste · Iniciar recorrido" else "Iniciar recorrido",fontSize=20.sp)
+                            }
+                        }
                         journey.state=="FINISHED" -> {
                             WorkerFinishedPanel(journey,if(cloud.onlineTask(zone.getString("id"))) workerSyncText(cloud.delivered(journey.id,journey.state),true) else null,
                                 onNewDay=if(busyJourney==null && trustedZone && historyJourney==null) ({ confirmNew=true }) else null,onShare={sendReport(journey)})
@@ -654,6 +681,26 @@ class AssignmentActivity : TrackingMapActivity() {
                 } else {
                     val online=cloud.enabled && cloud.sentOnline(zone.getString("id"))
                     if(online) Text("✓ Enviada en línea a "+zone.optString("worker")+" · "+onlineStatus,style=MaterialTheme.typography.labelMedium)
+                    val others=remember(onlineRevision,id) { cloud.linkedWorkers().filter { !it.first.equals(zone.optString("worker").trim(),true) } }
+                    val sectorOfTask=data.sectors.find { it.id==zone.optString("sectorId") }
+                    if(cloud.enabled && others.isNotEmpty() && sectorOfTask!=null) {
+                        var reassign by remember(id) { mutableStateOf(false) }
+                        OutlinedButton(onClick={reassign=true}) { Text("Reasignar a otro repartidor") }
+                        // A new task, not an edit: the previous one stays in the history with its tracks.
+                        if(reassign) AlertDialog(onDismissRequest={reassign=false},title={Text("Reasignar "+zone.optString("name"))},text={
+                            Column(verticalArrangement=Arrangement.spacedBy(6.dp)) {
+                                Text("La tarea de "+zone.optString("worker")+" queda en el historial. El nuevo repartidor recibe la zona con lo ya recorrido.")
+                                others.forEach { (name,phone) -> Button(modifier=Modifier.fillMaxWidth(),onClick={
+                                    reassign=false
+                                    runCatching { val signed=signedTask(buildTask(sectorOfTask,name,zone.optString("note")))
+                                        prefs.edit().putBoolean("owner:"+signed.getString("id"),true).commit()
+                                        cloud.assign(signed,phone); id=signed.getString("id"); revision++
+                                        msg="Zona reasignada a $name. Le aparece en su app en unos segundos." }
+                                        .onFailure { msg=it.localizedMessage ?: "No se pudo reasignar." }
+                                }) { Text(name) } }
+                            }
+                        },confirmButton={TextButton(onClick={reassign=false}) { Text("Cancelar") }})
+                    }
                     else if(cloud.enabled) {
                         var targetDevice by remember(id) { mutableStateOf(cloud.recipient(zone.getString("worker"))) }
                         Text(onlineStatus,style=MaterialTheme.typography.labelMedium)
@@ -718,16 +765,7 @@ class AssignmentActivity : TrackingMapActivity() {
                 if(selected!=null && (previousJourneys(data,selected.id).isNotEmpty() || work.reportsFor(work.tasksFor(selected,data.sectors)).isNotEmpty()))
                     Text("La tarea incluirá los tramos anteriores para retomar esta zona.",style=MaterialTheme.typography.bodySmall)
                 Button(enabled=work.loaded && selected!=null && person.isNotBlank() && (recipient.isBlank() || recipient.matches(Regex("[A-Za-z0-9_-]{20,128}"))),onClick={
-                    val key=newId();val o=JSONObject().put("version",1).put("kind","task").put("id",key).put("worker",person.trim()).put("name",selected!!.name).put("polygon",selected.polygonJson).put("note",note).put("sectorId",selected.id)
-                    val prior=work.reportsFor(work.tasksFor(selected,data.sectors)).flatMap { it.lines } +
-                        previousJourneys(data,selected.id).flatMap { mapTracks(data,it) }
-                    val pins=work.reportsFor(work.tasksFor(selected,data.sectors)).flatMap { it.marks } +
-                        previousJourneys(data,selected.id).flatMap { journeyMarks(data,it) }
-                    if(pins.isNotEmpty()) o.put("previousEvents",encodedMarks(pins).toString())
-                    if(prior.isNotEmpty()) {
-                        o.put("previousSegments",previousSegments(prior).toString())
-                        o.put("previousGroups",JSONArray(prior.filter { it.points.size>=2 }.map { it.group }).toString())
-                    }
+                    val o=buildTask(selected!!,person.trim(),note);val key=o.getString("id")
                     runCatching { val signed=signedTask(o)
                         if(selected.status!="ACTIVE") vm.perform { repo.saveSector(selected.copy(status="ACTIVE")) }
                         prefs.edit().putBoolean("owner:$key",true).commit();id=key;revision++

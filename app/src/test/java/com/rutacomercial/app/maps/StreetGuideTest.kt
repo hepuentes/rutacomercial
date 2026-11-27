@@ -7,7 +7,7 @@ class StreetGuideTest {
     private fun p(x:Int,y:Int)=MapCoordinate(y*.001,x*.001)
     private fun n(id:Long,x:Int,y:Int)=StreetNode(id,p(x,y))
     private val square=listOf(p(0,0),p(6,0),p(6,6),p(0,6))
-    private fun directed(plan:StreetGuide)=plan.steps.flatMap { it.points.zipWithNext() }
+    private fun directed(plan:StreetGuide)=plan.steps.filter { !it.connector }.flatMap { it.points.zipWithNext() }
 
     @Test fun walkedDirectionIsSkippedButTheOtherSidewalkRemains() {
         val a=n(1,1,1); val b=n(2,3,1); val c=n(3,5,1); val d=n(4,3,4)
@@ -21,6 +21,8 @@ class StreetGuideTest {
         assertEquals(1,legs.count { it==b.point to a.point })
         assertEquals(2,plan.doneLegs)
         assertEquals(6,plan.totalLegs)
+        // The next pending block is reached along streets, never by a straight jump.
+        assertTrue(plan.steps.zipWithNext().filter { (a,b)->a.section==b.section }.all { (a,b)->a.points.last()==b.points.first() })
         // Walking it back the other way finishes the street.
         val both=walked+listOf(walked.first().asReversed())
         assertEquals(4,planStreetGuide(streets,square,d.point,both).doneLegs)

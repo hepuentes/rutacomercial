@@ -5,7 +5,8 @@ import kotlin.math.*
 
 internal data class StreetNode(val id: Long, val point: MapCoordinate)
 internal data class GuideStreet(val name: String, val nodes: List<StreetNode>)
-internal data class GuideStep(val street: String, val points: List<MapCoordinate>, val section: Int)
+/** connector: a walk over streets already done (or to the start), shown so the worker never cuts through a block. */
+internal data class GuideStep(val street: String, val points: List<MapCoordinate>, val section: Int, val connector: Boolean = false)
 internal data class StreetGuide(val steps: List<GuideStep>, val streets: List<List<MapCoordinate>>, val doneLegs: Int = 0, val totalLegs: Int = 0)
 
 private fun distance(a: MapCoordinate, b: MapCoordinate) =
@@ -123,6 +124,30 @@ internal fun planStreetGuide(streets: List<GuideStreet>, zone: List<MapCoordinat
             outlines.add(listOf(a.point,b.point))
         }
     }
+    // Undirected copy for shortest walks; the Euler pass below consumes [adjacent].
+    val graph = adjacent.mapValues { it.value.toList() }
+    fun shortest(from: StreetNode, to: StreetNode): List<Leg>? {
+        if (from == to) return emptyList()
+        val best = HashMap<StreetNode, Double>().apply { put(from, 0.0) }
+        val via = HashMap<StreetNode, Leg>()
+        val queue = java.util.PriorityQueue<Pair<Double, StreetNode>>(compareBy { it.first }).apply { add(0.0 to from) }
+        while (queue.isNotEmpty()) {
+            val (d, node) = queue.poll()
+            if (node == to) break
+            if (d > (best[node] ?: Double.MAX_VALUE)) continue
+            for (leg in graph[node].orEmpty()) {
+                val nd = d + distance(leg.from.point, leg.to.point)
+                if (nd < (best[leg.to] ?: Double.MAX_VALUE)) { best[leg.to] = nd; via[leg.to] = leg; queue.add(nd to leg.to) }
+            }
+        }
+        if (to !in via) return null
+        return generateSequence(via[to]) { via[it.from] }.toList().asReversed()
+    }
+    fun connector(from: StreetNode, to: StreetNode, section: Int, label: String): GuideStep? {
+        val path = shortest(from, to)?.takeIf { it.isNotEmpty() } ?: return null
+        if (path.sumOf { distance(it.from.point, it.to.point) } < 15.0) return null
+        return GuideStep(label + path.first().street, listOf(path.first().from.point) + path.map { it.to.point }, section, connector = true)
+    }
     // An Euler circuit visits each street segment once in each direction.
     // Prefer staying on the same street. A disconnected part starts a separate walk.
     val steps=mutableListOf<GuideStep>()
@@ -151,6 +176,8 @@ internal fun planStreetGuide(streets: List<GuideStreet>, zone: List<MapCoordinat
         }
         var previous:Leg?=null
         var points=mutableListOf<MapCoordinate>()
+        // Where the worker stands after the last pending block; a gap to the next one is walked along streets.
+        var lastEnd:StreetNode?=null
         for(leg in reversed.asReversed()) {
             total++
             if(coverage.covers(leg.from.point,leg.to.point)) {
@@ -162,12 +189,22 @@ internal fun planStreetGuide(streets: List<GuideStreet>, zone: List<MapCoordinat
             val prior=previous
             if(prior==null || prior.street!=leg.street || prior.straightness(leg)<0.45) {
                 if(prior!=null) steps.add(GuideStep(prior.street,points,section))
+                val from=lastEnd
+                if(prior==null && from!=null && from!=leg.from) connector(from,leg.from,section,"Pasá por ")?.let { steps.add(it) }
                 points=mutableListOf(leg.from.point)
             }
             points.add(leg.to.point)
             previous=leg
+            lastEnd=leg.to
         }
         previous?.let { steps.add(GuideStep(it.street,points,section)) }
+    }
+    // From where the worker stands to the first pending block, along streets, when already inside the zone.
+    steps.firstOrNull()?.let { first ->
+        val start = graph.keys.firstOrNull { it.point == first.points.first() }
+        val near = graph.keys.minByOrNull { distance(it.point, origin) }
+        if (start != null && near != null && distance(near.point, origin) <= 60.0)
+            connector(near, start, first.section, "Caminá por ")?.let { steps.add(0, it) }
     }
     return StreetGuide(steps,outlines,done,total)
 }

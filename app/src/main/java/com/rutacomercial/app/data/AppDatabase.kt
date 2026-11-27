@@ -38,6 +38,7 @@ abstract class AppDao {
     @Query("SELECT * FROM stock_movements ORDER BY at, rowid") abstract suspend fun movements(): List<StockMovement>
     @Query("SELECT * FROM journeys ORDER BY startedAt DESC") abstract suspend fun journeys(): List<Journey>
     @Query("SELECT * FROM track_points ORDER BY at, rowid") abstract suspend fun points(): List<TrackPoint>
+    @Query("SELECT * FROM track_points WHERE journeyId=:journeyId ORDER BY at, rowid") abstract suspend fun journeyPoints(journeyId: String): List<TrackPoint>
     @Query("SELECT * FROM incidents ORDER BY at DESC") abstract suspend fun incidents(): List<Incident>
     @Query("SELECT * FROM route_stops ORDER BY position") abstract suspend fun routeStops(): List<RouteStop>
     @Query("SELECT * FROM audit ORDER BY at") abstract suspend fun audit(): List<AuditEvent>

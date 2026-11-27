@@ -13,5 +13,6 @@ class RutaApplication : Application(), TrackingDependencies {
         super.onCreate()
         MapBootstrap.initialize(this)
         cloud.start()
+        if (!BuildConfig.WORKER_EDITION && cloud.enabled) com.rutacomercial.app.ui.DaySummaryReceiver.schedule(this)
     }
 }

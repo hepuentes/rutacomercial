@@ -175,7 +175,7 @@ internal fun BoxScope.WalkGuideControl(zone:MapSector,position:MapCoordinate?,pr
                         (next?.takeIf { it.section==step.section }?.street ?: "Fin del sector"),style=MaterialTheme.typography.titleMedium)
                     val prev=plan.steps.getOrNull(index-1)
                     val returning=prev?.points?.asReversed()==step.points
-                    Text((if(returning) "Volvé por " else "Seguí por ")+step.street,maxLines=1,overflow=TextOverflow.Ellipsis,style=MaterialTheme.typography.titleSmall)
+                    Text(if(step.connector) step.street+" · sin repartir" else (if(returning) "Volvé por " else "Seguí por ")+step.street,maxLines=1,overflow=TextOverflow.Ellipsis,style=MaterialTheme.typography.titleSmall)
                 } else Text(error ?: "Preparando guía de calles…",style=MaterialTheme.typography.bodySmall)
             }
             if(step!=null && index<plan.steps.lastIndex) TextButton(onClick={automatic=false;index++;focusRequest++}) { Text("Siguiente") }

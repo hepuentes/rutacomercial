@@ -17,28 +17,32 @@ import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.launch
 
 /** What the worker learns from the Owner's QR: where to send its code and which signature to trust. */
-internal data class LinkInvite(val owner: String, val key: String)
+internal data class LinkInvite(val owner: String, val key: String, val code: String)
 
-private const val linkPrefix = "rutacomercial:vincular:1:"
+private const val linkPrefix = "rutacomercial:vincular:2:"
+private val inviteCode = Regex("[A-HJ-NP-Z2-9]{6}")
 
-internal fun linkQr(owner: String, key: String) = "$linkPrefix$owner:$key"
+/** The QR carries the same short-lived invite code as the typed option: Firestore only accepts a link backed by it. */
+internal fun linkQr(owner: String, key: String, code: String) = "$linkPrefix$owner:$key:$code"
 
 internal fun parseLinkQr(text: String, validKey: (String) -> Boolean = OwnerIdentity::validKey): LinkInvite? {
     if (!text.startsWith(linkPrefix)) return null
     val parts = text.removePrefix(linkPrefix).split(':')
-    if (parts.size != 2 || !parts[0].matches(Regex("[A-Za-z0-9_-]{20,128}")) || parts[1].length > 400 || !validKey(parts[1])) return null
-    return LinkInvite(parts[0], parts[1])
+    if (parts.size != 3 || !parts[0].matches(Regex("[A-Za-z0-9_-]{20,128}")) || parts[1].length > 400 || !validKey(parts[1])
+        || !parts[2].matches(inviteCode)) return null
+    return LinkInvite(parts[0], parts[1], parts[2])
 }
 
 @Composable
 internal fun OwnerLinkQrDialog(ownerUid: String, code: String?, codeError: Boolean, close: () -> Unit) {
-    val qr = remember(ownerUid) {
-        BarcodeEncoder().encodeBitmap(linkQr(ownerUid, OwnerIdentity.publicKey()), BarcodeFormat.QR_CODE, 600, 600).asImageBitmap()
+    val qr = remember(ownerUid, code) {
+        code?.let { BarcodeEncoder().encodeBitmap(linkQr(ownerUid, OwnerIdentity.publicKey(), it), BarcodeFormat.QR_CODE, 600, 600).asImageBitmap() }
     }
     AlertDialog(onDismissRequest = close, title = { Text("Vincular repartidor") }, text = {
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("En el teléfono del repartidor, abrí RutaComercial Repartidor y tocá Escanear QR de mi Owner.")
-            Image(qr, "QR para vincular repartidor", Modifier.fillMaxWidth().height(240.dp))
+            if (qr != null) Image(qr, "QR para vincular repartidor", Modifier.fillMaxWidth().height(240.dp))
+            else if (!codeError) Box(Modifier.fillMaxWidth().height(240.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
             HorizontalDivider()
             Text("¿No están juntos? Mandale este código por WhatsApp. Vale 30 minutos.")
             when {

@@ -52,15 +52,38 @@ internal object GuideStreets {
         }
     }
 
-    suspend fun load(context:Context,zone:List<MapCoordinate>):List<GuideStreet> = withContext(Dispatchers.IO) {
+    private fun boundsOf(zone:List<MapCoordinate>):String {
         val area=requireNotNull(DownloadArea.from(zone))
         require(area.widthM*area.heightM<=25_000_000 && maxOf(area.widthM,area.heightM)<=12_000) {
             "Dividí esta zona en sectores más pequeños para preparar la guía."
         }
-        val bounds=listOf(area.south,area.west,area.north,area.east).joinToString(",")
-        val key=MessageDigest.getInstance("SHA-256").digest(bounds.toByteArray()).take(12).joinToString("") { "%02x".format(it) }
-        val dir=File(context.cacheDir,"guide-streets-v1").apply { mkdirs() }
-        val file=File(dir,"$key.json")
+        return listOf(area.south,area.west,area.north,area.east).joinToString(",")
+    }
+    /** Same zone, same file: Owner and worker compute the key from the same polygon. */
+    private fun cacheFile(context:Context,zone:List<MapCoordinate>):File {
+        val key=MessageDigest.getInstance("SHA-256").digest(boundsOf(zone).toByteArray()).take(12).joinToString("") { "%02x".format(it) }
+        return File(File(context.cacheDir,"guide-streets-v1").apply { mkdirs() },"$key.json")
+    }
+
+    /** Owner: the raw street list to ship with the task, so the worker never depends on public servers. */
+    suspend fun raw(context:Context,zone:List<MapCoordinate>):String = withContext(Dispatchers.IO) {
+        load(context,zone)
+        cacheFile(context,zone).readText()
+    }
+
+    /** Worker: keep the streets the Owner shipped; refuses anything that does not parse as a street list. */
+    fun store(context:Context,zone:List<MapCoordinate>,body:String) {
+        require(body.length<=maxBytes) ; parse(body)
+        val file=cacheFile(context,zone)
+        val temp=File.createTempFile("streets-",null,file.parentFile)
+        try { temp.writeText(body); Files.move(temp.toPath(),file.toPath(),StandardCopyOption.REPLACE_EXISTING,StandardCopyOption.ATOMIC_MOVE) }
+        finally { temp.delete() }
+    }
+
+    suspend fun load(context:Context,zone:List<MapCoordinate>):List<GuideStreet> = withContext(Dispatchers.IO) {
+        val bounds=boundsOf(zone)
+        val file=cacheFile(context,zone)
+        val dir=file.parentFile!!
         val cached=file.takeIf { it.isFile && it.length() in 1..maxBytes }?.let { runCatching { parse(it.readText()) }.getOrNull() }
         if(cached!=null && System.currentTimeMillis()-file.lastModified()<14L*86400000) return@withContext cached
         val types="residential|living_street|unclassified|tertiary|secondary|primary|pedestrian|footway"

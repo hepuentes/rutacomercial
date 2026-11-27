@@ -64,7 +64,10 @@ internal class CloudSync(private val app: RutaApplication) {
                     else if (doc.id !in subscriptions) {
                         // A task the worker uploaded after receiving it by file is online from now on.
                         doc.getString("worker")?.let { w -> if (!prefs.contains("target:"+doc.id)) prefs.edit().putString("target:"+doc.id, w).apply() }
+                        val pending = doc.metadata.hasPendingWrites()
                         subscriptions[doc.id] = scope.launch {
+                            // A task just written here is not on the server yet; listening now would be refused.
+                            if (pending) delay(5_000)
                             retry { listen(doc.reference.collection("reports")) { receiveReport(doc.id, it) } }
                         }
                     }
@@ -151,7 +154,8 @@ internal class CloudSync(private val app: RutaApplication) {
         require(enabled && name.isNotBlank() && name.length <= 100)
         require(invite.owner != device.value) { "Ese QR es de este mismo teléfono." }
         OwnerIdentity.bind(assignmentPrefs, invite.key)
-        check(prefs.edit().putString("ownerUid", invite.owner).putString("linkName", name).putBoolean("linkPending", true).commit())
+        check(prefs.edit().putString("ownerUid", invite.owner).putString("linkName", name).putString("linkInvite", invite.code)
+            .putBoolean("linkPending", true).commit())
         scheduleDelivery()
         status.value = "Vinculando con tu Owner…"
     }
@@ -178,6 +182,8 @@ internal class CloudSync(private val app: RutaApplication) {
     fun accepted(id: String) {
         val edit = prefs.edit().remove("pending:"+id)
         prefs.getString("taskOwner:"+id, null)?.let { edit.putString("ownerUid", it) }
+        // The "new task" notice is done once the worker accepts it.
+        app.getSystemService(android.app.NotificationManager::class.java).cancel(("task:"+id).hashCode())
         edit.apply(); revision.update { it+1 }
     }
 
@@ -210,13 +216,18 @@ internal class CloudSync(private val app: RutaApplication) {
                 // Denied means the doc already exists: the linked worker uploaded this file task itself.
                 denied { publish(db.collection("tasks").document(id), task, mapOf("owner" to uid,"worker" to value.toString())) }
                 prefs.edit().remove(key).apply()
+                shareGuide(id, task)
                 status.value = "Tarea sincronizada"
             }
         } else {
             val owner = prefs.getString("ownerUid", null)
             if (owner != null && prefs.getBoolean("linkPending", false)) {
-                db.collection("links").document(uid).set(mapOf("owner" to owner, "worker" to uid,
-                    "name" to prefs.getString("linkName", "").orEmpty(), "at" to FieldValue.serverTimestamp())).await()
+                val refused = denied { db.collection("links").document(uid).set(mapOf("owner" to owner, "worker" to uid,
+                    "name" to prefs.getString("linkName", "").orEmpty(), "invite" to prefs.getString("linkInvite", "").orEmpty(),
+                    "at" to FieldValue.serverTimestamp())).await() }
+                // An expired or foreign invite is refused for good: undo so the worker can link again.
+                if (refused) { prefs.edit().remove("linkPending").remove("ownerUid").remove("linkName").remove("linkInvite").apply()
+                    status.value = "El código venció. Pedile al Owner uno nuevo."; return@withLock }
                 prefs.edit().remove("linkPending").apply()
                 status.value = "✓ Vinculado con tu Owner"
             }
@@ -260,6 +271,34 @@ internal class CloudSync(private val app: RutaApplication) {
         }
     }
 
+    private fun zoneOf(task: JSONObject) = com.rutacomercial.app.domain.Geo.parsePolygon(task.getString("polygon"))
+        .map { com.rutacomercial.app.maps.MapCoordinate(it.first, it.second) }
+
+    /** Owner: upload the guide streets next to the task; public servers are flaky, so a few spaced tries. */
+    private fun shareGuide(id: String, task: JSONObject) = scope.launch {
+        repeat(4) { attempt ->
+            val ok = runCatching {
+                val body = com.rutacomercial.app.maps.GuideStreets.raw(app, zoneOf(task))
+                publish(db.collection("tasks").document(id).collection("guide").document("streets"), JSONObject(body), emptyMap())
+            }.isSuccess
+            if (ok) return@launch
+            delay(60_000L * (attempt + 1))
+        }
+    }
+
+    /** Worker: keep the streets the Owner shipped so the guide works without public servers or signal. */
+    private fun receiveGuide(id: String, task: JSONObject) = scope.launch {
+        repeat(24) { attempt ->
+            val doc = runCatching { db.collection("tasks").document(id).collection("guide").document("streets").get().await() }.getOrNull()
+            if (doc != null && doc.exists()) {
+                runCatching { com.rutacomercial.app.maps.GuideStreets.store(app, zoneOf(task), unpack(doc).toString()) }
+                return@launch
+            }
+            // The Owner usually uploads within a minute; check often at first, then rarely.
+            delay(if (attempt < 8) 20_000L else 120_000L)
+        }
+    }
+
     /** Runs a write; true when Firestore refused it for permissions (other errors still propagate to retry). */
     private suspend fun denied(write: suspend () -> Unit): Boolean = try { write(); false }
         catch (e: FirebaseFirestoreException) { if (e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) true else throw e }
@@ -296,7 +335,7 @@ internal class CloudSync(private val app: RutaApplication) {
             catch (e: FirebaseFirestoreException) { if (e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) return null else throw e }
         val owner = doc.getString("owner") ?: return null
         val key = doc.getString("key") ?: return null
-        return parseLinkQr(linkQr(owner, key))
+        return parseLinkQr(linkQr(owner, key, code))
     }
 
     suspend fun flushPending() {
@@ -348,6 +387,7 @@ internal class CloudSync(private val app: RutaApplication) {
             save(local(doc.id,"received"),task)
             edit.putBoolean("pending:"+doc.id,true)
             if (fresh) Notifier.notify(app, "task:"+doc.id, "Tenés una tarea nueva", task.optString("name")+" · tocá para verla")
+            receiveGuide(doc.id, task)
         }
         edit.commit()
         revision.update { it+1 }
