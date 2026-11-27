@@ -69,3 +69,11 @@ El abanico combina la brújula del teléfono (vector de rotación: giroscopio, a
 ## Respaldo
 
 El respaldo cifrado (versión 3) incluye también las tareas, los informes recibidos de los repartidores y las propuestas. Los respaldos anteriores se siguen restaurando, sin esa parte.
+
+## Buscar un lugar
+
+El buscador consulta Photon (photon.komoot.io), gratuito y basado en OpenStreetMap, y muestra sugerencias mientras se escribe, priorizando lo cercano al mapa. Si Photon no responde, usa el geocodificador del teléfono. También acepta coordenadas y enlaces de Google Maps.
+
+## Mapa oscuro
+
+En Opciones de ambas apps, **Mapa oscuro** cambia al estilo oscuro de OpenFreeMap, también gratuito. Las regiones guardadas sin internet usan el estilo claro.

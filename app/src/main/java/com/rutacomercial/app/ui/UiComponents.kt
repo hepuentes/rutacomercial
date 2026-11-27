@@ -1,6 +1,7 @@
 package com.rutacomercial.app.ui
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -111,4 +112,15 @@ internal fun ConfirmDialog(title: String, message: String, confirm: String, onDi
 internal fun Modifier.mapHeight(fraction: Float): Modifier {
     val screen = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp
     return this.height(maxOf(240f, screen * fraction).dp)
+}
+
+
+/** Same switch in both apps' map options. */
+@androidx.compose.runtime.Composable
+internal fun DarkMapSwitch() {
+    val dark by com.rutacomercial.app.maps.MapBootstrap.dark
+    androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).toggleable(value = dark, role = androidx.compose.ui.semantics.Role.Switch) { com.rutacomercial.app.maps.MapBootstrap.setDark(it) }, verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+        androidx.compose.material3.Switch(dark, null)
+        androidx.compose.material3.Text("Mapa oscuro", Modifier.padding(start = 8.dp))
+    }
 }

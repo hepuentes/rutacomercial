@@ -255,7 +255,7 @@ internal fun TerritoryMap(
                 cameraMoving = true
                 if (rectangle) selectionChanged(emptyList())
             }
-            ready.setStyle(MapBootstrap.STYLE_URL) { style = it }
+            ready.setStyle(MapBootstrap.styleUrl(MapBootstrap.dark.value)) { style = it }
         }
         onDispose {
             lifecycle.removeObserver(observer)
@@ -291,7 +291,12 @@ internal fun TerritoryMap(
         }
     }
     LaunchedEffect(online) {
-        if (online && warning != null) map?.setStyle(MapBootstrap.STYLE_URL) { style = it; warning = null }
+        if (online && warning != null) map?.setStyle(MapBootstrap.styleUrl(MapBootstrap.dark.value)) { style = it; warning = null }
+    }
+    val darkMap by MapBootstrap.dark
+    var appliedDark by remember { mutableStateOf(darkMap) }
+    LaunchedEffect(map, darkMap) {
+        if (map != null && appliedDark != darkMap) { appliedDark = darkMap; map?.setStyle(MapBootstrap.styleUrl(darkMap)) { style = it } }
     }
     LaunchedEffect(map, viewport, frame, selectingZone, freehand, cameraMoving) { updateSelection() }
     LaunchedEffect(style) {
@@ -304,6 +309,14 @@ internal fun TerritoryMap(
                 setProperties(textSize(14f), textPadding(0.5f), textAllowOverlap(id!="highway-name-path"), textHaloWidth(1.6f), textHaloColor("#FFFFFF"), textColor("#1F2A24"), symbolSpacing(70f))
             }
         }
+        listOf("highway_name_other","highway_name_motorway").forEach { id ->
+            style?.getLayerAs<org.maplibre.android.style.layers.SymbolLayer>(id)?.setProperties(
+                textSize(14f), textHaloWidth(1.6f), textHaloColor("#14181C"), textColor("#E8ECEF"), symbolSpacing(70f))
+        }
+        // Shops and services easier to spot, like a regular maps app.
+        if(!compactNavigation) style?.layers?.filterIsInstance<org.maplibre.android.style.layers.SymbolLayer>()
+            ?.filter { it.id.startsWith("poi") }
+            ?.forEach { it.setProperties(iconSize(1.25f), textSize(12.5f)) }
     }
     val route=navigation?.route
     val displayTracks=remember(tracks,route) {

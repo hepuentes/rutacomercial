@@ -96,6 +96,9 @@ class AssignmentActivity : TrackingMapActivity() {
 
     override fun onCreate(state:Bundle?) {
         super.onCreate(state)
+        // Notices for new tasks, proposals and finished journeys need this on Android 13+.
+        if(android.os.Build.VERSION.SDK_INT>=33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)!=android.content.pm.PackageManager.PERMISSION_GRANTED)
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),41)
         setContent { RutaTheme { Surface(Modifier.fillMaxSize(),color=MaterialTheme.colorScheme.surfaceContainerLow) { MapWindow { Panel() } } } }
     }
     @Composable private fun Panel() {
@@ -610,6 +613,7 @@ class AssignmentActivity : TrackingMapActivity() {
                             TextButton(onClick={options=false;nav.startZone(zone.optString("name"),polygon)}) { Text("Cómo llegar a la zona") }
                             TextButton(onClick={options=false;nav.search=true}) { Text("Buscar un lugar") }
                             TextButton(onClick={options=false;drawingProposal=true}) { Text("Proponer zona") }
+                            DarkMapSwitch()
                             TextButton(onClick={options=false;sharedText=""}) { Text("Traer ubicación de Google Maps") }
                             TextButton(onClick={options=false;consultGoogleMap(this@AssignmentActivity,position ?: polygon.firstOrNull())}) { Text("Consultar en Google Maps") }
                             if(busyJourney==null) TextButton(onClick={options=false;inbox=true}) { Text("Abrir tarea recibida por archivo") }
@@ -680,6 +684,7 @@ class AssignmentActivity : TrackingMapActivity() {
             }
             if(!worker && id==null && cloud.enabled) {
                 OwnerGoogleAccount(cloud)
+                Button(onClick={startActivity(Intent(this@AssignmentActivity,TodayActivity::class.java))},modifier=Modifier.fillMaxWidth().heightIn(min=52.dp)) { Text("Ver repartidores hoy") }
                 var showLinkQr by remember { mutableStateOf(false) }
                 val linked=remember(revision,onlineRevision) { cloud.linkedWorkers() }
                 if(linked.isNotEmpty()) {

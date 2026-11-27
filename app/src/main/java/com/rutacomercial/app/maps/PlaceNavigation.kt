@@ -67,9 +67,16 @@ internal fun PlaceSearch(near:MapCoordinate?,onPick:(Place)->Unit,onClose:()->Un
     var working by remember { mutableStateOf(false) }
     var msg by remember { mutableStateOf("") }
     var places by remember { mutableStateOf(emptyList<Place>()) }
+    // Suggestions while typing, like a regular maps app.
+    LaunchedEffect(input) {
+        val query=input.trim()
+        if(query.length<3 || SharedMapLinks.coordinates(query)!=null) return@LaunchedEffect
+        delay(450)
+        places=runCatching { withContext(Dispatchers.IO) { PhotonSearch.search(query,near) } }.getOrDefault(places)
+    }
     AlertDialog(onDismissRequest=onClose,title={Text("Buscar un lugar")},text={
         Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(4.dp)) {
-            OutlinedTextField(input,{input=it.take(250);places=emptyList();msg=""},singleLine=true,enabled=!working,label={Text("Lugar, dirección o coordenadas")})
+            OutlinedTextField(input,{input=it.take(250);msg=""},singleLine=true,enabled=!working,label={Text("Lugar, dirección o coordenadas")})
             if(working) LinearProgressIndicator()
             if(msg.isNotBlank()) Text(msg)
             places.forEach { place->TextButton(onClick={onPick(place)}) { Text(place.name) } }
@@ -81,6 +88,7 @@ internal fun PlaceSearch(near:MapCoordinate?,onPick:(Place)->Unit,onClose:()->Un
             if(coords!=null) onPick(Place(query,coords)) else scope.launch {
                 working=true;msg=""
                 try { places=withContext(Dispatchers.IO) {
+                    runCatching { PhotonSearch.search(query,near) }.getOrDefault(emptyList()).takeIf { it.isNotEmpty() }?.let { return@withContext it }
                     @Suppress("DEPRECATION")
                     fun results():List<android.location.Address> {
                         val gc=Geocoder(ctx)

@@ -1,0 +1,89 @@
+package com.rutacomercial.app.ui
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import com.rutacomercial.app.maps.*
+import kotlinx.coroutines.delay
+import java.time.LocalDate
+import java.time.ZoneId
+
+/** One worker as the Owner sees them today: last known place and how fresh it is. */
+internal data class WorkerToday(val worker: String, val zone: String, val state: String, val meters: Double,
+    val updated: Long, val last: MapCoordinate?, val lines: List<MapTrack>)
+
+/** ACTIVE without news for 5 minutes reads as no signal: the phone sends about once a minute. */
+internal fun todayState(state: String, updated: Long, now: Long): String = when {
+    state == "FINISHED" -> "terminó"
+    state == "PAUSED" -> "en pausa"
+    now - updated > 5 * 60_000L -> "sin señal"
+    else -> "recorriendo"
+}
+
+internal fun workersToday(reports: List<WorkReport>, since: Long): List<WorkerToday> =
+    reports.filter { it.updated >= since || it.at >= since }.groupBy { it.worker.trim().lowercase() }.map { (_, mine) ->
+        val latest = mine.maxBy { it.updated }
+        WorkerToday(latest.worker, latest.name, latest.state, mine.sumOf { it.meters }, latest.updated,
+            latest.lines.lastOrNull { it.points.isNotEmpty() }?.points?.last(), mine.flatMap { it.lines })
+    }.sortedByDescending { it.updated }
+
+private val stateColors = mapOf("recorriendo" to "#1B6B3A", "en pausa" to "#9A5B00", "sin señal" to "#B3261E", "terminó" to "#5F6B73")
+
+class TodayActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent { RutaTheme { Surface(Modifier.fillMaxSize()) { TodayScreen { finish() } } } }
+    }
+}
+
+@Composable
+private fun TodayScreen(close: () -> Unit) {
+    val work = zoneWork()
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) { while (true) { delay(30_000); now = System.currentTimeMillis() } }
+    val since = remember { LocalDate.now().atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli() }
+    val workers = remember(work, since) { workersToday(work.reports, since) }
+    var center by remember { mutableStateOf<MapCoordinate?>(null) }
+    var request by remember { mutableIntStateOf(0) }
+    Column(Modifier.fillMaxSize().systemBarsPadding().padding(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Hoy", style = MaterialTheme.typography.titleLarge)
+                Text(if (workers.isEmpty()) "Ningún repartidor envió avances hoy" else (if (workers.size == 1) "1 repartidor" else "${workers.size} repartidores") + " · se actualiza cada minuto",
+                    style = MaterialTheme.typography.bodySmall)
+            }
+            TextButton(onClick = close) { Text("Volver") }
+        }
+        TerritoryMap(Modifier.fillMaxWidth().weight(1f), tracks = workers.flatMap { it.lines },
+            businesses = workers.mapNotNull { w ->
+                val state = todayState(w.state, w.updated, now)
+                w.last?.let { MapBusiness("today-" + w.worker, w.worker + " · " + state, it.latitude, it.longitude, stateColors.getValue(state)) }
+            },
+            fitArea = if (center == null) workers.flatMap { w -> w.lines.flatMap { it.points } } else emptyList(),
+            center = center, centerRequest = request)
+        Column(Modifier.fillMaxWidth().heightIn(max = 220.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            workers.forEach { w ->
+                val state = todayState(w.state, w.updated, now)
+                val minutes = ((now - w.updated) / 60_000).coerceAtLeast(0)
+                Surface(onClick = { w.last?.let { center = it; request++ } }, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceVariant) {
+                    Row(Modifier.fillMaxWidth().padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(w.worker + " · " + w.zone, style = MaterialTheme.typography.titleSmall)
+                            Text(number(w.meters / 1000, 2) + " km · " + if (minutes == 0L) "ahora" else "hace $minutes min", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Text(state, color = Color(android.graphics.Color.parseColor(stateColors.getValue(state))), style = MaterialTheme.typography.labelLarge)
+                    }
+                }
+            }
+        }
+    }
+}

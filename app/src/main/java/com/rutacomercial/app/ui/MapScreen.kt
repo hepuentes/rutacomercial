@@ -307,6 +307,8 @@ internal fun MapScreen(vm: RutaViewModel, data: DataSnapshot, tracking: Tracking
                     }, modifier = Modifier.fillMaxWidth()) { Text("Consultar zona en Google Maps") }
                     Text("En Google Maps elegí un lugar o poné un pin. Tocá Compartir → RutaComercial para delimitar una zona aquí.", style = MaterialTheme.typography.bodySmall)
                     FilledTonalButton(onClick = { sheet = null; onImportLocation() }, modifier = Modifier.fillMaxWidth()) { Text("Traer ubicación de Google Maps") }
+                    if (!com.rutacomercial.app.BuildConfig.WORKER_EDITION) FilledTonalButton(onClick = { sheet = null; context.startActivity(Intent(context, TodayActivity::class.java)) }, modifier = Modifier.fillMaxWidth()) { Text("Ver repartidores hoy") }
+                    DarkMapSwitch()
                     if (selectedJourneyId == null) Row(verticalAlignment = Alignment.CenterVertically) {
                         Switch(showPrevious, { showPrevious = it }); Text("Mostrar recorridos anteriores (30 días)", Modifier.padding(start = 8.dp))
                     }
