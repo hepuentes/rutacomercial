@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -64,6 +65,8 @@ internal fun MapScreen(vm: RutaViewModel, data: DataSnapshot, tracking: Tracking
     var addBusiness by remember { mutableStateOf(false) }
     var incident by remember { mutableStateOf(false) }
     var showPrevious by rememberSaveable { mutableStateOf(false) }
+    // Owner: today's workers drawn on the main map, refreshed with each progress report.
+    var live by rememberSaveable { mutableStateOf(false) }
     var userMovedMap by remember { mutableStateOf(false) }
     var followLocation by remember { mutableStateOf(tracking.isTracking && selectedJourneyId == null && focus == null) }
     var rename by remember { mutableStateOf(false) }
@@ -120,6 +123,11 @@ internal fun MapScreen(vm: RutaViewModel, data: DataSnapshot, tracking: Tracking
         zoneName = generateSequence(1) { it + 1 }.map { "Zona $it" }.first { name -> data.sectors.none { it.name.equals(name, true) } }
         sharedPin = null; movingDraft = false; freehand = false; editing = true
     }
+    LaunchedEffect(data.sectors) {
+        if (!com.rutacomercial.app.BuildConfig.WORKER_EDITION) data.sectors.filter { it.status == "ACTIVE" }.forEach { s ->
+            runCatching { OfflineZones.ensure(context, "zone:" + s.id + ":" + s.polygonJson.hashCode(), Geo.parsePolygon(s.polygonJson).map { MapCoordinate(it.first, it.second) }, s.name) }
+        }
+    }
     var pendingZoneFit by remember { mutableStateOf(sectorId!=null && selectedJourneyId==null && focus==null) }
     LaunchedEffect(area,sectorId) {
         if(pendingZoneFit && area!=null && !editing && !userMovedMap && !tracking.isTracking) {
@@ -149,8 +157,10 @@ internal fun MapScreen(vm: RutaViewModel, data: DataSnapshot, tracking: Tracking
     BackHandler(editing) { editing = false }
     Column(Modifier.fillMaxSize()) {
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            TerritoryMap(Modifier.fillMaxSize(), tracks = mapLines, marks=if(editing) emptyList() else mapMarks, sectors = if (editing && freehand && draft.size >= 3)
-                    sectors.filterNot { it.id==draftId } + MapSector(draftId,zoneName,newZoneColor,draft,true) else sectors, businesses = businesses + listOfNotNull(sharedPin?.takeIf { editing }?.let { MapBusiness("shared-point","Punto compartido",it.latitude,it.longitude,"#AC2754") }),
+            val liveWorkers = remember(live, work, today) { if (live) workersToday(work.reports, today).filter { it.state != "FINISHED" } else emptyList() }
+            TerritoryMap(Modifier.fillMaxSize(), tracks = mapLines + liveWorkers.flatMap { it.lines }, marks=if(editing) emptyList() else mapMarks, sectors = if (editing && freehand && draft.size >= 3)
+                    sectors.filterNot { it.id==draftId } + MapSector(draftId,zoneName,newZoneColor,draft,true) else sectors, businesses = businesses + listOfNotNull(sharedPin?.takeIf { editing }?.let { MapBusiness("shared-point","Punto compartido",it.latitude,it.longitude,"#AC2754") }) +
+                    liveWorkers.mapNotNull { w -> w.last?.let { MapBusiness("live-"+w.worker, w.worker+" · "+w.zone, it.latitude, it.longitude, if (w.state == "PAUSED") "#9A5B00" else "#1B6B3A") } },
                 navigation=nav.takeIf { selectedJourneyId==null },onNavigateLocate=onLocate,
                 onGuideActive={guiding=it;if(it && !com.rutacomercial.app.tracking.TrackingController.hasLocationPermission(context)) onLocate()},onDrawHere={p->nav.close();point=p;createZone();sharedPin=p},
                 currentLocation = tracking.position, accuracyMeters = tracking.accuracyMeters, locationFresh = freshLocation,
@@ -193,11 +203,20 @@ internal fun MapScreen(vm: RutaViewModel, data: DataSnapshot, tracking: Tracking
                     Text(bounds?.let { "${it.widthM.toInt()} × ${it.heightM.toInt()} m" } ?: "Preparando selección…", style = MaterialTheme.typography.bodySmall)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         TextButton(onClick = { editing = false }, enabled = !busy, modifier = Modifier.weight(1f)) { Text("Cancelar") }
+                        var overlapWarning by remember { mutableStateOf<String?>(null) }
+                        fun saveZone() = vm.perform("Zona guardada", { choose(draftId); editing = false }) {
+                            val original=vm.repository.dao.sector(draftId) ?: Sector(id=draftId,name=zoneName,color=newZoneColor)
+                            vm.repository.saveSector(original.copy(name=zoneName,polygonJson=Geo.polygonJson(draft.map { it.latitude to it.longitude })))
+                        }
+                        overlapWarning?.let { warning -> AlertDialog(onDismissRequest = { overlapWarning = null }, title = { Text("Zona superpuesta") },
+                            text = { Text("$warning Dos repartidores podrían cubrir las mismas calles.") },
+                            dismissButton = { TextButton(onClick = { overlapWarning = null }) { Text("Ajustar borde") } },
+                            confirmButton = { Button(onClick = { overlapWarning = null; saveZone() }) { Text("Guardar igual") } }) }
                         Button(onClick = {
-                            vm.perform("Zona guardada", { choose(draftId); editing = false }) {
-                                val original=vm.repository.dao.sector(draftId) ?: Sector(id=draftId,name=zoneName,color=newZoneColor)
-                                vm.repository.saveSector(original.copy(name=zoneName,polygonJson=Geo.polygonJson(draft.map { it.latitude to it.longitude })))
-                            }
+                            val ring = draft.map { it.latitude to it.longitude }
+                            val clash = data.sectors.filter { it.id != draftId }.map { it to com.rutacomercial.app.domain.ZoneOverlap.percent(ring, Geo.parsePolygon(it.polygonJson)) }
+                                .filter { it.second >= 15 }.maxByOrNull { it.second }
+                            if (clash != null) overlapWarning = "El ${clash.second} % de esta zona ya está en ${clash.first.name}." else saveZone()
                         }, enabled = !busy && zoneName.isNotBlank() && draft.size >= 3 && Geo.validPolygon(draft.map { it.latitude to it.longitude }), modifier = Modifier.weight(1f)) { Text("Usar esta zona") }
                     }
                 } else if (selectedJourneyId != null) {
@@ -271,6 +290,18 @@ internal fun MapScreen(vm: RutaViewModel, data: DataSnapshot, tracking: Tracking
                         }, modifier = Modifier.fillMaxWidth()) {
                             Column(Modifier.padding(14.dp)) {
                                 Text("● ${saved.name}", color = androidx.compose.ui.graphics.Color(android.graphics.Color.parseColor(if(saved.status=="COMPLETED") "#68B75F" else saved.color)), fontWeight = FontWeight.Bold)
+                                // Coverage from every track in the zone: worker reports and the Owner's own journeys.
+                                val progress = remember(saved.id, saved.polygonJson, work, data.points.size) {
+                                    val walked = work.reportsFor(work.tasksFor(saved, data.sectors)).flatMap { r -> r.lines.flatMap { it.points } } +
+                                        previousJourneys(data, saved.id).flatMap { j -> mapTracks(data, j).flatMap { it.points } }
+                                    com.rutacomercial.app.domain.ZoneCoverage.percent(Geo.parsePolygon(saved.polygonJson), walked.map { it.latitude to it.longitude }) ?: 0
+                                }
+                                val (stage, tone) = when { saved.status == "COMPLETED" || progress >= 90 -> "Completa" to "#2E7D32"; progress > 0 -> "En curso" to "#B26A00"; else -> "Sin empezar" to "#6B7280" }
+                                val color = androidx.compose.ui.graphics.Color(android.graphics.Color.parseColor(tone))
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text("$stage · $progress %", color = color, style = MaterialTheme.typography.labelLarge, modifier = Modifier.width(140.dp))
+                                    LinearProgressIndicator(progress = { progress / 100f }, color = color, modifier = Modifier.weight(1f))
+                                }
                                 val visits = data.visits.filter { it.sectorId == saved.id && it.status != "PENDING" }
                                 Text("${work.label(saved,data.sectors)} · última visita: ${dateOnly((visits.map { it.at } + data.activeQuickDeliveries.filter { it.sectorId == saved.id }.map { it.at }).maxOrNull())}", style = MaterialTheme.typography.bodySmall)
                             }
@@ -308,6 +339,10 @@ internal fun MapScreen(vm: RutaViewModel, data: DataSnapshot, tracking: Tracking
                     Text("En Google Maps elegí un lugar o poné un pin. Tocá Compartir → RutaComercial para delimitar una zona aquí.", style = MaterialTheme.typography.bodySmall)
                     FilledTonalButton(onClick = { sheet = null; onImportLocation() }, modifier = Modifier.fillMaxWidth()) { Text("Traer ubicación de Google Maps") }
                     if (!com.rutacomercial.app.BuildConfig.WORKER_EDITION) FilledTonalButton(onClick = { sheet = null; context.startActivity(Intent(context, TodayActivity::class.java)) }, modifier = Modifier.fillMaxWidth()) { Text("Ver repartidores hoy") }
+                    if (!com.rutacomercial.app.BuildConfig.WORKER_EDITION) Row(Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                        .toggleable(value = live, role = androidx.compose.ui.semantics.Role.Switch) { live = it }, verticalAlignment = Alignment.CenterVertically) {
+                        Switch(live, null); Text("Repartidores en vivo", Modifier.padding(start = 8.dp))
+                    }
                     DarkMapSwitch()
                     if (selectedJourneyId == null) Row(verticalAlignment = Alignment.CenterVertically) {
                         Switch(showPrevious, { showPrevious = it }); Text("Mostrar recorridos anteriores (30 días)", Modifier.padding(start = 8.dp))

@@ -5,6 +5,24 @@ service cloud.firestore {
       // Equalities joined by || let Firestore prove that queries filtered by owner or worker are allowed.
       return request.auth != null && (request.auth.uid == task.owner || request.auth.uid == task.worker);
     }
+    // Every upload is gzip split in parts of at most 500 KB (11 parts, 5 MB of data). Rejecting more keeps a
+    // tampered phone from filling another phone or the free quota.
+    function header(extra) {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['parts', 'digest', 'body'].concat(extra))
+        && d.parts is int && d.parts >= 1 && d.parts <= 11
+        && d.digest is string && d.digest.size() <= 64
+        && (!('body' in d) || (d.body is bytes && d.body.size() <= 600000));
+    }
+    function part() {
+      return request.resource.data.keys().hasOnly(['body'])
+        && request.resource.data.body is bytes && request.resource.data.body.size() <= 600000;
+    }
+    function linkedTo(owner) {
+      let link = /databases/$(database)/documents/links/$(request.auth.uid);
+      return exists(link) && get(link).data.owner == owner;
+    }
+
     // Short-lived codes so a worker can link without scanning. Readable only by exact code, never listed.
     match /invites/{code} {
       allow get: if request.auth != null && resource.data.expires > request.time;
@@ -14,52 +32,66 @@ service cloud.firestore {
         && request.resource.data.expires is timestamp
         && request.resource.data.expires < request.time + duration.value(2, 'h');
     }
-    // A worker scans the Owner's QR and publishes its own code and name under its uid.
+
+    // A worker links with an unexpired invite the Owner created; guessing an Owner's account is not enough.
     match /links/{workerId} {
       allow read: if member(resource.data);
       allow create, update: if request.auth != null && workerId == request.auth.uid
-        && request.resource.data.keys().hasOnly(['owner', 'worker', 'name', 'at'])
+        && request.resource.data.keys().hasOnly(['owner', 'worker', 'name', 'at', 'invite'])
+        && request.resource.data.invite is string
+        && exists(/databases/$(database)/documents/invites/$(request.resource.data.invite))
+        && get(/databases/$(database)/documents/invites/$(request.resource.data.invite)).data.owner == request.resource.data.owner
+        && get(/databases/$(database)/documents/invites/$(request.resource.data.invite)).data.expires > request.time
         && request.resource.data.worker == request.auth.uid
         && request.resource.data.owner is string && request.resource.data.owner != request.auth.uid
         && request.resource.data.owner.size() <= 128
         && request.resource.data.name is string && request.resource.data.name.size() >= 1
         && request.resource.data.name.size() <= 100;
     }
-    // A worker sends a zone proposal to the Owner account it learned from a verified task.
+
+    // Only a linked worker proposes, and only to its own Owner.
     match /proposals/{proposalId} {
       allow read: if member(resource.data);
       allow create: if request.auth != null && request.resource.data.worker == request.auth.uid
-        && request.resource.data.owner is string && request.resource.data.owner != request.auth.uid
-        && request.resource.data.owner.size() <= 128;
+        && request.resource.data.owner is string && linkedTo(request.resource.data.owner)
+        && header(['owner', 'worker']);
       allow update: if request.auth.uid == resource.data.worker && request.resource.data == resource.data;
       match /parts/{part} {
         allow read: if member(get(/databases/$(database)/documents/proposals/$(proposalId)).data);
-        allow write: if request.auth.uid == getAfter(/databases/$(database)/documents/proposals/$(proposalId)).data.worker;
+        allow write: if request.auth.uid == getAfter(/databases/$(database)/documents/proposals/$(proposalId)).data.worker && part();
       }
     }
+
     match /tasks/{taskId} {
       allow read: if member(resource.data);
       // The Owner sends a task, or a linked worker uploads a task it got by file, only towards its own Owner.
-      allow create: if request.auth != null && (
+      allow create: if request.auth != null && header(['owner', 'worker']) && (
         (request.resource.data.owner == request.auth.uid
           && request.resource.data.worker is string && request.resource.data.worker != request.auth.uid
           && request.resource.data.worker.size() <= 128)
         || (request.resource.data.worker == request.auth.uid
-          && request.resource.data.owner is string
-          && exists(/databases/$(database)/documents/links/$(request.auth.uid))
-          && get(/databases/$(database)/documents/links/$(request.auth.uid)).data.owner == request.resource.data.owner));
+          && request.resource.data.owner is string && linkedTo(request.resource.data.owner)));
       allow update: if request.auth.uid == resource.data.owner && request.resource.data == resource.data;
       match /parts/{part} {
         allow read: if member(get(/databases/$(database)/documents/tasks/$(taskId)).data);
-        allow write: if member(getAfter(/databases/$(database)/documents/tasks/$(taskId)).data);
+        allow write: if member(getAfter(/databases/$(database)/documents/tasks/$(taskId)).data) && part();
+      }
+      // Street list for the guide, uploaded by the Owner so the worker does not depend on public servers.
+      match /guide/{doc} {
+        allow read: if member(get(/databases/$(database)/documents/tasks/$(taskId)).data);
+        allow write: if request.auth.uid == get(/databases/$(database)/documents/tasks/$(taskId)).data.owner && header([]);
+        match /parts/{part} {
+          allow read: if member(get(/databases/$(database)/documents/tasks/$(taskId)).data);
+          allow write: if request.auth.uid == get(/databases/$(database)/documents/tasks/$(taskId)).data.owner && part();
+        }
       }
       match /reports/{reportId} {
         function task() { return get(/databases/$(database)/documents/tasks/$(taskId)).data; }
         allow read: if member(task());
-        allow create, update: if request.auth.uid == task().worker;
+        allow create, update: if request.auth.uid == task().worker && header([]);
         match /parts/{part} {
           allow read: if member(task());
-          allow create, update: if request.auth.uid == task().worker;
+          allow create, update: if request.auth.uid == task().worker && part();
         }
       }
     }

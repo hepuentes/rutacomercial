@@ -19,7 +19,7 @@ import java.time.ZoneId
 
 /** One worker as the Owner sees them today: last known place and how fresh it is. */
 internal data class WorkerToday(val worker: String, val zone: String, val state: String, val meters: Double,
-    val updated: Long, val last: MapCoordinate?, val lines: List<MapTrack>)
+    val updated: Long, val last: MapCoordinate?, val lines: List<MapTrack>, val activeMs: Long = 0, val zones: Int = 1)
 
 /** ACTIVE without news for 5 minutes reads as no signal: the phone sends about once a minute. */
 internal fun todayState(state: String, updated: Long, now: Long): String = when {
@@ -33,8 +33,15 @@ internal fun workersToday(reports: List<WorkReport>, since: Long): List<WorkerTo
     reports.filter { it.updated >= since || it.at >= since }.groupBy { it.worker.trim().lowercase() }.map { (_, mine) ->
         val latest = mine.maxBy { it.updated }
         WorkerToday(latest.worker, latest.name, latest.state, mine.sumOf { it.meters }, latest.updated,
-            latest.lines.lastOrNull { it.points.isNotEmpty() }?.points?.last(), mine.flatMap { it.lines })
+            latest.lines.lastOrNull { it.points.isNotEmpty() }?.points?.last(), mine.flatMap { it.lines },
+            mine.sumOf { it.duration }, mine.map { it.taskId }.distinct().size)
     }.sortedByDescending { it.updated }
+
+/** Plain text for WhatsApp or the end-of-day notice. */
+internal fun daySummary(workers: List<WorkerToday>): String = if (workers.isEmpty()) "Hoy no hubo recorridos." else
+    "Resumen de hoy\n" + workers.joinToString("\n") { w ->
+        "• ${w.worker}: ${number(w.meters / 1000, 2)} km · ${hours(w.activeMs)} · ${w.zones} ${if (w.zones == 1) "zona" else "zonas"}"
+    } + "\nTotal: ${number(workers.sumOf { it.meters } / 1000, 2)} km"
 
 private val stateColors = mapOf("recorriendo" to "#1B6B3A", "en pausa" to "#9A5B00", "sin señal" to "#B3261E", "terminó" to "#5F6B73")
 
@@ -58,6 +65,8 @@ private fun TodayScreen(close: () -> Unit) {
     val since = remember { LocalDate.now().atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli() }
     val workers = remember(work, since) { workersToday(work.reports, since) }
     var center by remember { mutableStateOf<MapCoordinate?>(null) }
+    // Follows everyone as they move until the Owner pans the map by hand.
+    var follow by remember { mutableStateOf(true) }
     var request by remember { mutableIntStateOf(0) }
     Column(Modifier.fillMaxSize().systemBarsPadding().padding(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -66,6 +75,10 @@ private fun TodayScreen(close: () -> Unit) {
                 Text(if (workers.isEmpty()) "Ningún repartidor envió avances hoy" else (if (workers.size == 1) "1 repartidor" else "${workers.size} repartidores") + " · se actualiza cada minuto",
                     style = MaterialTheme.typography.bodySmall)
             }
+            if (workers.isNotEmpty()) TextButton(onClick = {
+                context.startActivity(android.content.Intent.createChooser(android.content.Intent(android.content.Intent.ACTION_SEND)
+                    .setType("text/plain").putExtra(android.content.Intent.EXTRA_TEXT, daySummary(workers)), "Compartir resumen"))
+            }) { Text("Compartir") }
             TextButton(onClick = close) { Text("Volver") }
         }
         TerritoryMap(Modifier.fillMaxWidth().weight(1f), tracks = workers.flatMap { it.lines }, sectors = zones,
@@ -73,17 +86,19 @@ private fun TodayScreen(close: () -> Unit) {
                 val state = todayState(w.state, w.updated, now)
                 w.last?.let { MapBusiness("today-" + w.worker, w.worker + " · " + state, it.latitude, it.longitude, stateColors.getValue(state)) }
             },
-            fitArea = if (center == null) workers.flatMap { w -> w.lines.flatMap { it.points } } else emptyList(),
-            center = center, centerRequest = request)
+            fitArea = if (follow && center == null) workers.flatMap { w -> w.lines.flatMap { it.points } } else emptyList(),
+            center = center, centerRequest = request, onMapGesture = { follow = false; center = null })
+        if (!follow) TextButton(onClick = { follow = true; center = null }) { Text("Seguir a todos") }
         Column(Modifier.fillMaxWidth().heightIn(max = 220.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             workers.forEach { w ->
                 val state = todayState(w.state, w.updated, now)
                 val minutes = ((now - w.updated) / 60_000).coerceAtLeast(0)
-                Surface(onClick = { w.last?.let { center = it; request++ } }, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceVariant) {
+                Surface(onClick = { w.last?.let { follow = false; center = it; request++ } }, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceVariant) {
                     Row(Modifier.fillMaxWidth().padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text(w.worker + " · " + w.zone, style = MaterialTheme.typography.titleSmall)
-                            Text(number(w.meters / 1000, 2) + " km hoy · " + if (minutes == 0L) "ahora" else "hace $minutes min", style = MaterialTheme.typography.bodySmall)
+                            Text(number(w.meters / 1000, 2) + " km · " + hours(w.activeMs) + " · " + w.zones + (if (w.zones == 1) " zona" else " zonas") +
+                                " · " + if (minutes == 0L) "ahora" else "hace $minutes min", style = MaterialTheme.typography.bodySmall)
                         }
                         Text(state, color = Color(android.graphics.Color.parseColor(stateColors.getValue(state))), style = MaterialTheme.typography.labelLarge)
                     }

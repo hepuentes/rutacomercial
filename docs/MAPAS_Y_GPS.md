@@ -77,3 +77,12 @@ El buscador consulta Photon (photon.komoot.io), gratuito y basado en OpenStreetM
 ## Mapa oscuro
 
 En Opciones de ambas apps, **Mapa oscuro** cambia al estilo oscuro de OpenFreeMap, también gratuito. Las regiones guardadas sin internet usan el estilo claro.
+
+## En la calle
+
+- **Notificación del recorrido:** visible en la pantalla de bloqueo con Pausar y Terminar; Terminar pide confirmación. En pausa ofrece Reanudar.
+- **Llegaste:** dentro de la zona el botón dice "Llegaste · Iniciar recorrido" y el teléfono vibra.
+- **Avisos de zona:** si salís de la zona más de un minuto, vibra y avisa; al volver, el aviso se borra. Al llegar al 90 % de cobertura avisa "Zona casi completa".
+- **Guía por calles:** para llegar al primer tramo pendiente o pasar de uno a otro, la Guía camina por las calles ("Pasá por … · sin repartir"), nunca en línea recta.
+- **Mapa sin conexión automático:** con Wi-Fi, el Repartidor guarda el mapa de cada zona aceptada y el Owner, el de sus zonas activas (hasta 1 km).
+- **Zonas superpuestas:** al guardar una zona que comparte 15 % o más con otra, el Owner recibe un aviso.

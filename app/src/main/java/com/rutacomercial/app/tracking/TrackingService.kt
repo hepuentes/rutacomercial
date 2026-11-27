@@ -149,7 +149,12 @@ class TrackingService : Service(), LocationListener {
         super.onCreate()
         manager = getSystemService(LocationManager::class.java)
         locationSource = JourneyLocationSource(this)
-        getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(CHANNEL, "Recorrido en curso", NotificationManager.IMPORTANCE_LOW).apply { description = "Seguimiento GPS iniciado por vos" })
+        // Default importance without sound: many phones hide low-importance notices on the lock screen,
+        // and the Pausar/Terminar buttons must be reachable there.
+        val notifications = getSystemService(NotificationManager::class.java)
+        notifications.deleteNotificationChannel("journey_tracking")
+        notifications.createNotificationChannel(NotificationChannel(CHANNEL, "Recorrido en curso", NotificationManager.IMPORTANCE_DEFAULT).apply {
+            description = "Seguimiento GPS iniciado por vos"; setSound(null, null); enableVibration(false); lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC })
         TrackingRuntime.mutable.update { it.copy(serviceRunning = true) }
         scope.launch {
             while (isActive) {
@@ -178,6 +183,7 @@ class TrackingService : Service(), LocationListener {
         val eventPosition=intent?.getStringExtra("anchor") ?: status.position?.takeIf { (status.accuracyMeters ?: 999f)<=20f && status.fixAt?.let { at -> requestedAt-at in 0L..5000L }==true }
             ?.let { "${it.latitude},${it.longitude}" }.orEmpty()
         if (action == START || action == RESUME || action == "RESTORE_ACTIVE") {
+            getSystemService(NotificationManager::class.java).cancel(PAUSED_ID)
             try {
                 if (!TrackingController.hasLocationPermission(this)) throw SecurityException("Sin permiso")
                 if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION_ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
@@ -189,6 +195,15 @@ class TrackingService : Service(), LocationListener {
                 stopSelf(startId)
                 return START_NOT_STICKY
             }
+        } else if (action == ASK_FINISH) {
+            // Lock-screen finish needs a second tap; a pocket tap must never close the day.
+            getSystemService(NotificationManager::class.java).notify(if (foreground) NOTIFICATION_ID else PAUSED_ID, notification(confirm = true, paused = !foreground))
+            if (!foreground) stopSelf(startId)
+            return START_NOT_STICKY
+        } else if (action == KEEP) {
+            getSystemService(NotificationManager::class.java).notify(if (foreground) NOTIFICATION_ID else PAUSED_ID, notification(paused = !foreground))
+            if (!foreground) stopSelf(startId)
+            return START_NOT_STICKY
         } else if (action == PAUSE || action == FINISH) {
             // Stop the sensor synchronously, before waiting for the database transaction.
             stopListening()
@@ -224,12 +239,14 @@ class TrackingService : Service(), LocationListener {
                             if (requestedGeneration == commandGeneration) startListening()
                         }
                         PAUSE -> {
-                            repository.currentJourney()?.let { repository.pauseJourney(it.id, requestedAt,eventPosition) }
+                            repository.currentJourney()?.let { repository.pauseJourney(it.id, requestedAt,eventPosition)
+                                getSystemService(NotificationManager::class.java).notify(PAUSED_ID, notification(paused = true)) }
                             (application as? com.rutacomercial.app.RutaApplication)?.cloud?.scheduleDelivery()
                             TrackingRuntime.mutable.update { it.copy(message = "Jornada en pausa. GPS detenido.") }
                             if (requestedGeneration == commandGeneration) finishService()
                         }
                         FINISH -> {
+                            getSystemService(NotificationManager::class.java).cancel(PAUSED_ID)
                             repository.currentJourney()?.let { repository.finishJourney(it.id, requestedAt,eventPosition) }
                             (application as? com.rutacomercial.app.RutaApplication)?.cloud?.scheduleDelivery()
                             TrackingRuntime.mutable.update { it.copy(message = "Jornada finalizada y guardada. GPS detenido.") }
@@ -287,6 +304,8 @@ class TrackingService : Service(), LocationListener {
         stopSelf()
     }
 
+    private val zoneAlerts by lazy { ZoneAlerts(this, repository) }
+
     override fun onLocationChanged(location: Location) {
         val observedGeneration = generation
         if (!listening) return
@@ -326,6 +345,7 @@ class TrackingService : Service(), LocationListener {
                     }
                     val result = repository.recordLocation(fix, signalContinuous = !filtered.breakSegment)
                     if (result.accepted) {
+                        runCatching { zoneAlerts.check(fix.latitude, fix.longitude, System.currentTimeMillis()) }
                         lastFixElapsed = android.os.SystemClock.elapsedRealtime()
                         TrackingRuntime.mutable.update { it.copy(position = MapCoordinate(fix.latitude, fix.longitude), accuracyMeters = fix.accuracyMeters,
                             fixAt = fix.at, message = if (fix.isMock) "Ubicación simulada · requiere revisión" else if (filtered.reason == "Ubicación lista") "GPS listo · esperando movimiento" else "Recorrido activo · movimiento confirmado") }
@@ -352,17 +372,27 @@ class TrackingService : Service(), LocationListener {
         super.onDestroy()
     }
 
-    private fun notification(): Notification {
+    /** Public on the lock screen: it only says a journey is running, never where. */
+    private fun notification(confirm: Boolean = false, paused: Boolean = false): Notification {
         val launch = packageManager.getLaunchIntentForPackage(packageName)
         val content = launch?.let { PendingIntent.getActivity(this, 0, it, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE) }
         fun action(name: String, code: Int) = PendingIntent.getService(this, code, Intent(this, TrackingService::class.java).setAction(name), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        // Resuming starts location in the foreground; a notification tap is allowed to do that from the background.
+        fun resume() = PendingIntent.getForegroundService(this, 5, Intent(this, TrackingService::class.java).setAction(RESUME), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val builder = Notification.Builder(this, CHANNEL)
-            .setSmallIcon(com.rutacomercial.app.R.drawable.ic_tracking).setContentTitle("RutaComercial · recorrido activo")
-            .setContentText("Se está registrando tu ubicación durante esta jornada.")
+            .setSmallIcon(com.rutacomercial.app.R.drawable.ic_tracking)
+            .setContentTitle(when { confirm -> "¿Terminar el recorrido de hoy?"; paused -> "RutaComercial · recorrido en pausa"; else -> "RutaComercial · recorrido activo" })
+            .setContentText(when { confirm -> "Se guarda y se envía al Owner."; paused -> "GPS detenido. Tocá Reanudar para seguir."; else -> "Se está registrando tu ubicación durante esta jornada." })
             .setContentIntent(content).setOngoing(true).setOnlyAlertOnce(true)
-            .setVisibility(Notification.VISIBILITY_PRIVATE).setCategory(Notification.CATEGORY_SERVICE)
-            .addAction(Notification.Action.Builder(null, "Pausar", action(PAUSE, 1)).build())
-            .addAction(Notification.Action.Builder(null, "Finalizar", action(FINISH, 2)).build())
+            .setVisibility(Notification.VISIBILITY_PUBLIC).setCategory(Notification.CATEGORY_SERVICE)
+        when {
+            confirm -> builder.addAction(Notification.Action.Builder(null, "Sí, terminar", action(FINISH, 2)).build())
+                .addAction(Notification.Action.Builder(null, "Seguir", action(KEEP, 4)).build())
+            paused -> builder.addAction(Notification.Action.Builder(null, "Reanudar", resume()).build())
+                .addAction(Notification.Action.Builder(null, "Terminar", action(ASK_FINISH, 3)).build())
+            else -> builder.addAction(Notification.Action.Builder(null, "Pausar", action(PAUSE, 1)).build())
+                .addAction(Notification.Action.Builder(null, "Terminar", action(ASK_FINISH, 3)).build())
+        }
         if (Build.VERSION.SDK_INT >= 31) builder.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
         return builder.build()
     }
@@ -372,7 +402,10 @@ class TrackingService : Service(), LocationListener {
         const val PAUSE = "com.rutacomercial.PAUSE"
         const val RESUME = "com.rutacomercial.RESUME"
         const val FINISH = "com.rutacomercial.FINISH"
-        internal const val CHANNEL = "journey_tracking"
+        const val ASK_FINISH = "com.rutacomercial.ASK_FINISH"
+        const val KEEP = "com.rutacomercial.KEEP"
+        private const val PAUSED_ID = 2402
+        internal const val CHANNEL = "journey_tracking_v2"
         private const val NOTIFICATION_ID = 2401
     }
 }

@@ -25,4 +25,10 @@ class TodayTest {
         assertEquals("ACTIVE", list[0].state)
         assertEquals(MapCoordinate(2.0, 2.0), list[0].last)
     }
+
+    @Test fun summaryListsEachWorker() {
+        val text = daySummary(workersToday(listOf(report("Juan", "FINISHED", 100, 1500.0), report("Ana", "ACTIVE", 50, 500.0)), since = 10))
+        org.junit.Assert.assertTrue(text, text.contains("Juan: 1,50 km"))
+        org.junit.Assert.assertTrue(text, text.contains("Total: 2,00 km"))
+    }
 }

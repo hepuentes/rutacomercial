@@ -45,3 +45,19 @@ Desde la raíz, ejecutar `firebase emulators:exec --only auth,firestore --projec
 En Owner, **Ver repartidores hoy** (en Asignaciones y en Opciones del mapa) muestra a cada repartidor que envió avances hoy: su trazo, su última posición y su estado (recorriendo, en pausa, sin señal si no envía hace más de 5 minutos, o terminó). Se actualiza con cada avance, aproximadamente cada minuto.
 
 Avisos: el Repartidor recibe "Tenés una tarea nueva"; el Owner recibe propuestas de zona, repartidores vinculados y recorridos terminados. Llegan mientras la app está abierta o en segundo plano (siempre durante un recorrido). Con la app cerrada del todo no llegan: eso requeriría Cloud Functions, que necesita el plan pago de Firebase.
+
+## Seguridad
+
+- Un repartidor solo se vincula con una invitación vigente (30 minutos) que el Owner creó; el QR lleva el mismo código. Conocer la cuenta de un Owner no alcanza.
+- Solo un repartidor vinculado puede proponer zonas o subir tareas, y únicamente hacia su Owner.
+- Todo lo que se sube tiene campos fijos y tamaño limitado (partes de 600 KB, 11 como máximo).
+- Probado contra el proyecto real: vínculo sin invitación, con invitación falsa, propuesta y tarea sin vínculo, bloques de 700 KB, 50 partes y campos extra son rechazados.
+- Pendiente fuera de la app: restringir la clave de API de Android al paquete y la huella SHA-1 en Google Cloud, y activar App Check.
+
+## Calles de la Guía
+
+Al asignar en línea, el Owner descarga las calles de la zona y las sube junto a la tarea (`tasks/{id}/guide/streets`). El Repartidor las guarda al recibir la tarea, así la Guía no depende de los servidores públicos ni de la señal.
+
+## Resumen del día
+
+El Owner recibe un aviso alrededor de las 20 h con km, horas y zonas por repartidor. En **Hoy**, **Compartir** manda ese resumen por WhatsApp.
