@@ -6,9 +6,11 @@ Owner y Repartidor usan el mismo proyecto de Firebase, con autenticación anóni
 
 Se hace una sola vez por teléfono de repartidor:
 
-1. En Owner, entrá a **Asignaciones** y tocá **Vincular repartidor con QR**.
-2. En Repartidor, tocá **Escanear QR de mi Owner**, apuntá al QR y escribí tu nombre.
+1. En Owner, entrá a **Asignaciones** y tocá **Vincular repartidor**. Aparece un QR y un código de 6 caracteres que vale 30 minutos.
+2. En Repartidor, tocá **Escanear QR de mi Owner**, o **Tengo un código** si no están juntos, y escribí tu nombre. También está en **Opciones** cuando ya hay una tarea abierta.
 3. El repartidor aparece en **Repartidores vinculados**. Al tocar su nombre, **Asignar en línea** le envía la tarea, sin códigos ni PIN.
+
+Al vincularse, el Repartidor sube solo las tareas que ya tenía de ese Owner, también las recibidas por archivo, y con ellas todos sus recorridos. No hace falta reenviar nada. El código se guarda en `invites/{código}` y solo se puede leer conociéndolo.
 
 El QR lleva la cuenta del Owner y su clave pública. Con eso el Repartidor confía en las tareas firmadas por ese Owner y publica su código y su nombre en `links/{uid}`.
 

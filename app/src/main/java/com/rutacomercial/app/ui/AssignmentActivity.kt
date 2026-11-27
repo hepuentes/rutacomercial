@@ -247,19 +247,28 @@ class AssignmentActivity : TrackingMapActivity() {
         qrTask?.let { task -> OwnerPairingCard(task) { qrTask=null } }
         var person by remember { mutableStateOf("") }; var note by remember { mutableStateOf("") }
         var recipient by remember(person) { mutableStateOf(cloud.recipient(person)) }
-        fun copyDeviceCode() {
-            getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Teléfono repartidor",deviceId))
-            msg = "Código copiado. Enviáselo al Owner una sola vez."
-        }
+        @Composable fun LinkCard() = WorkerLinkCard(deviceId,onLink={ invite,name ->
+            runCatching { cloud.link(invite,name) }
+                .onSuccess { msg="✓ Vinculado. Tus tareas y recorridos se sincronizan con tu Owner." }
+                .onFailure { msg=it.localizedMessage ?: "No se pudo vincular." }
+        },onShareCode={
+            startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain")
+                .putExtra(Intent.EXTRA_TEXT,"Mi código de RutaComercial Repartidor: "+deviceId),"Enviar mi código al Owner"))
+        },lookup={ cloud.lookupInvite(it) })
         var sector by remember { mutableStateOf(intent.getStringExtra("sector")) }
         val workerMap = worker && zone!=null && incoming==null
         var options by remember(id) { mutableStateOf(false) }
         var confirmNew by remember(id) { mutableStateOf(false) }
         val nav=remember(id) { PlaceNavigation() }
         if(worker && drawingProposal && incoming==null && !loading) {
-            val references=remember(work.tasks) { work.tasks.distinctBy { it.polygon }.map { t->
-                MapSector(t.id,t.name,"#527A80",Geo.parsePolygon(t.polygon).map { MapCoordinate(it.first,it.second) })
-            } }
+            val references=remember(work.tasks,data.journeys,data.audit) {
+                val finished=data.journeys.filter { it.state=="FINISHED" }.map { it.id }.toSet()
+                val walked=data.audit.filter { it.action=="ASSIGNMENT" && it.entityId in finished }.map { it.detail }.toSet()
+                work.tasks.distinctBy { it.polygon }.map { t->
+                    val done=t.id in walked
+                    MapSector(t.id,t.name,if(done) "#68B75F" else "#527A80",Geo.parsePolygon(t.polygon).map { MapCoordinate(it.first,it.second) },completed=done)
+                }
+            }
             val referenceTracks=remember(data.points,data.audit) {
                 data.audit.filter { it.action=="ASSIGNMENT" }.flatMap { mapTracks(data,it.entityId) }
             }
@@ -294,14 +303,7 @@ class AssignmentActivity : TrackingMapActivity() {
             if(cloud.enabled && incoming==null && worker && !workerMap && cloud.canPropose())
                 Text("✓ Vinculado con tu Owner · "+onlineStatus,style=MaterialTheme.typography.labelMedium)
             else if(cloud.enabled && incoming==null && worker && !workerMap) {
-                WorkerLinkCard(deviceId,onLink={ invite,name ->
-                    runCatching { cloud.link(invite,name) }
-                        .onSuccess { msg="✓ Vinculado. Las tareas de tu Owner van a aparecer acá." }
-                        .onFailure { msg=it.localizedMessage ?: "No se pudo vincular." }
-                },onShareCode={
-                    startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain")
-                        .putExtra(Intent.EXTRA_TEXT,"Mi código de RutaComercial Repartidor: "+deviceId),"Enviar mi código al Owner"))
-                })
+                LinkCard()
                 Text(onlineStatus,style=MaterialTheme.typography.labelMedium)
             }
             if(worker && busyJourney==null && incoming==null) pendingOnline.forEach { key ->
@@ -594,7 +596,8 @@ class AssignmentActivity : TrackingMapActivity() {
                             Text(zone.optString("worker"),style=MaterialTheme.typography.titleMedium)
                             if(cloud.enabled) {
                                 Text(onlineStatus)
-                                if(!cloud.canPropose()) TextButton(enabled=deviceId.isNotBlank(),onClick={copyDeviceCode()}) { Text("Copiar mi código de teléfono") }
+                                if(!cloud.canPropose()) { Text("Este teléfono todavía no está vinculado con tu Owner.",style=MaterialTheme.typography.bodySmall); LinkCard() }
+                                else Text("✓ Vinculado con tu Owner",style=MaterialTheme.typography.bodySmall)
                             }
                             if(zone.optString("note").isNotBlank()) Text(zone.optString("note"))
                             if(previous.isNotEmpty()) Text("Violeta · recorridos anteriores",style=MaterialTheme.typography.bodySmall)
@@ -685,8 +688,13 @@ class AssignmentActivity : TrackingMapActivity() {
                         linked.forEach { (name,_) -> FilterChip(selected=person.trim().equals(name,true),onClick={person=name},label={Text(name)}) }
                     }
                 }
-                OutlinedButton(enabled=deviceId.isNotBlank(),onClick={showLinkQr=true}) { Text("Vincular repartidor con QR") }
-                if(showLinkQr) OwnerLinkQrDialog(deviceId) { showLinkQr=false }
+                var linkCode by remember { mutableStateOf<String?>(null) }
+                var linkCodeError by remember { mutableStateOf(false) }
+                OutlinedButton(enabled=deviceId.isNotBlank(),onClick={
+                    showLinkQr=true;linkCode=null;linkCodeError=false
+                    scope.launch { runCatching { cloud.createInvite() }.onSuccess { linkCode=it }.onFailure { linkCodeError=true } }
+                }) { Text("Vincular repartidor") }
+                if(showLinkQr) OwnerLinkQrDialog(deviceId,linkCode,linkCodeError) { showLinkQr=false }
             }
             if(!worker && id==null) {
                 Choice("Zona guardada",sector,data.sectors.map { it.id to it.name }) { sector=it }

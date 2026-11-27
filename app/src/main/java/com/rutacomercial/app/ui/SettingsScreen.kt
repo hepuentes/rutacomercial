@@ -20,6 +20,8 @@ internal fun SettingsScreen(vm:RutaViewModel,data:DataSnapshot,onBackup:(String)
     var passwordMode by remember{mutableStateOf<String?>(null)}
     var deleteConfirm by remember{mutableStateOf(false)}
     PageHeading("Configuración y privacidad","El teléfono conserva la información de tu operación.")
+    val cloud=(context.applicationContext as com.rutacomercial.app.RutaApplication).cloud
+    if(!com.rutacomercial.app.BuildConfig.WORKER_EDITION && cloud.enabled) OwnerGoogleAccount(cloud)
     InfoCard("Seguimiento solo durante la jornada","La ubicación se registra cuando iniciás expresamente una jornada. Pausar o finalizar detiene el seguimiento. No se inicia por encender el teléfono. Android puede interrumpir el servicio; esas interrupciones quedan señaladas y no se inventan segmentos.")
     Button(onClick=onPermissions,modifier=Modifier.fillMaxWidth()){Text("Revisar permisos de Android")}
     InfoCard("Dónde están tus datos","Negocios, teléfonos, fotografías y ubicaciones se guardan en el almacenamiento privado de la aplicación. No se sincronizan con un servidor. El proveedor del mapa recibe las solicitudes cartográficas necesarias. Evitá datos personales innecesarios en fotos y comentarios.")
