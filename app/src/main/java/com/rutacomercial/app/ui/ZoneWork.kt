@@ -26,7 +26,7 @@ internal data class WorkTask(val id: String, val sectorId: String?, val name: St
 
 internal data class WorkReport(val id: String, val taskId: String, val name: String, val worker: String,
     val at: Long, val dated: Boolean, val meters: Double, val duration: Long, val state: String, val lines: List<MapTrack>, val marks: List<RouteMark>,
-    val updated: Long = at)
+    val updated: Long = at, val outside: Boolean = false)
 
 internal data class ZoneWork(val tasks: List<WorkTask> = emptyList(), val reports: List<WorkReport> = emptyList(), val loaded: Boolean = false) {
     fun tasksFor(zone: Sector, zones: List<Sector>) = tasks.filter { it.belongsTo(zone, zones) }
@@ -64,11 +64,17 @@ internal data class ZoneWork(val tasks: List<WorkTask> = emptyList(), val report
                     WorkReport(key, taskId, task?.name ?: obj.optString("name"), task?.worker ?: obj.optString("worker"),
                         obj.optLong("startedAt", file.lastModified()), obj.has("startedAt"), obj.getDouble("meters"),
                         obj.getLong("duration"), obj.optString("state", "FINISHED"), lines, resultMarks(obj,lines).map { it.copy(group=key) },
-                        obj.optLong("capturedAt", file.lastModified()))
+                        obj.optLong("capturedAt", file.lastModified()), outsideChosen(obj))
                 }.getOrNull() }.sortedByDescending { it.at }
             return ZoneWork(tasks, reports, loaded = true)
         }
     }
+}
+
+/** The worker chose "Seguir fuera de la zona" in this journey. */
+internal fun outsideChosen(report: JSONObject?): Boolean {
+    val list = report?.optJSONArray("observations") ?: return false
+    return (0 until list.length()).any { list.optJSONObject(it)?.optString("kind") == "OUTSIDE_OK" }
 }
 
 internal fun resultMarks(report:JSONObject?, lines:List<MapTrack>):List<RouteMark> {

@@ -28,7 +28,7 @@ internal fun validProposal(o:JSONObject):Boolean = runCatching {
 @Composable
 internal fun WorkerZoneProposal(worker:String, position:MapCoordinate?, initialZone:List<MapCoordinate>,
     references:List<MapSector>,tracks:List<MapTrack>,reference:MapCoordinate?,referenceRequest:Int,onImport:()->Unit,
-    onLocate:()->Unit, online:Boolean, onShare:(JSONObject)->Unit, onClose:()->Unit) {
+    onLocate:()->Unit, online:Boolean, onShare:(JSONObject)->Unit, onClose:()->Unit, suggested:List<MapCoordinate> = emptyList()) {
     val ctx=androidx.compose.ui.platform.LocalContext.current
     val nav=remember { PlaceNavigation() }
     val status by com.rutacomercial.app.tracking.TrackingRuntime.state.collectAsState()
@@ -36,7 +36,8 @@ internal fun WorkerZoneProposal(worker:String, position:MapCoordinate?, initialZ
     var menu by remember { mutableStateOf(false) }
     var anchor by remember { mutableStateOf<MapCoordinate?>(null) }
     var viewport by remember { mutableStateOf<MapCoordinate?>(null) }
-    var encoded by rememberSaveable { mutableStateOf("[]") }
+    // A walk outside the assigned zone arrives already outlined; the worker can keep it or redraw.
+    var encoded by rememberSaveable { mutableStateOf(if(suggested.size>=3) Geo.polygonJson(suggested.map { it.latitude to it.longitude }) else "[]") }
     var title by rememberSaveable { mutableStateOf("") }
     var person by rememberSaveable { mutableStateOf(worker) }
     var details by rememberSaveable { mutableStateOf(false) }
@@ -48,7 +49,7 @@ internal fun WorkerZoneProposal(worker:String, position:MapCoordinate?, initialZ
     val points=remember(encoded) { Geo.parsePolygon(encoded) }
     val valid=remember(points) { Geo.validPolygon(points) }
     val polygon=remember(points) { points.map { MapCoordinate(it.first,it.second) } }
-    val frame=remember { if(position==null) initialZone else emptyList() }
+    val frame=remember { if(suggested.size>=3) suggested else if(position==null) initialZone else emptyList() }
     LaunchedEffect(position,requested) {
         if(requested && position!=null) { center=position;request++;requested=false }
     }

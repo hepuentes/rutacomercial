@@ -212,6 +212,14 @@ class Repository(val db: AppDatabase) {
         val saved=old.copy(state="PAUSED",activeMs=old.activeDuration(transition),intervalStartedAt=transition,lastAliveAt=transition,nextSegment=old.nextSegment+1)
         dao.putJourney(saved); audit("journey",id,"PAUSE",eventPosition,at=transition); saved
     }
+    /** Pause backdated to the last movement: the still minutes become pause, not paid active time. */
+    suspend fun pauseIdle(id:String,movedAt:Long):Journey = db.withTransaction {
+        val old=requireNotNull(dao.journey(id)){"La jornada no existe"}
+        if(old.state!="ACTIVE") return@withTransaction old
+        val transition=maxOf(movedAt,old.intervalStartedAt)
+        val saved=old.copy(state="PAUSED",activeMs=old.activeDuration(transition),intervalStartedAt=transition,lastAliveAt=transition,nextSegment=old.nextSegment+1)
+        dao.putJourney(saved); audit("journey",id,"PAUSE","",at=transition); saved
+    }
     suspend fun resumeJourney(id:String,now:Long=nowMillis(),eventPosition:String=""):Journey = db.withTransaction {
         val old=requireNotNull(dao.journey(id)){"La jornada no existe"}
         if(old.state=="ACTIVE") return@withTransaction old

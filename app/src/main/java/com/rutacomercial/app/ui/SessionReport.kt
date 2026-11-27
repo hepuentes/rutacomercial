@@ -15,7 +15,7 @@ internal fun sessionReport(data: DataSnapshot, journey: Journey, sessions: List<
             .put("kmh",ordered.drop(1).sumOf { it.distanceDeltaM }*3.6/seconds))
     }
     val observations=JSONArray()
-    data.incidents.filter { it.journeyId==journey.id && it.kind in setOf("FAST_INTERVAL","WALK_STOP","GPS","GPS_DISABLED","LOCATION_UNAVAILABLE") }.forEach {
+    data.incidents.filter { it.journeyId==journey.id && it.kind in setOf("FAST_INTERVAL","WALK_STOP","GPS","GPS_DISABLED","LOCATION_UNAVAILABLE","OUTSIDE_ZONE","OUTSIDE_OK","IDLE_PAUSE") }.forEach {
         observations.put(JSONObject().put("kind",it.kind).put("at",it.at))
     }
     val reportKey=if(journey.id==sessions.firstOrNull()) id else journey.id

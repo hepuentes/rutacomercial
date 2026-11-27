@@ -404,6 +404,9 @@ internal class CloudSync(private val app: RutaApplication) {
         require(old==null || old.optString("assignmentId",doc.id)==taskId)
         if (newerReport(old,report)===report && old?.toString()!=report.toString()) {
             save(file,report)
+            if (outsideChosen(report) && !outsideChosen(old))
+                Notifier.notify(app, "outside:"+doc.id, report.optString("worker")+" sigue fuera de la zona",
+                    report.optString("name")+" · decidió recorrer otra parte. Lo ves en Hoy y en su informe.") { putExtra("taskId", taskId) }
             if (report.optString("state")=="FINISHED" && old?.optString("state")!="FINISHED")
                 Notifier.notify(app, "done:"+doc.id, report.optString("worker")+" terminó el recorrido",
                     report.optString("name")+" · "+number(report.optDouble("meters")/1000,2)+" km") { putExtra("taskId", taskId) }

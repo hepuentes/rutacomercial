@@ -49,6 +49,8 @@ data class TrackingStatus(
     val provider: String = "",
     val isLocating: Boolean = false,
     val locationProblem: String? = null,
+    /** Zone name while the worker is outside it past the tolerance and has not chosen to continue. */
+    val outsideZone: String? = null,
     val message: String = "GPS detenido. Iniciá una jornada para registrar el recorrido.",
 )
 
@@ -71,6 +73,7 @@ object TrackingController {
     fun resume(context: Context) = command(context, TrackingService.RESUME, true)
     fun pause(context: Context) = command(context, TrackingService.PAUSE, false)
     fun finish(context: Context) = command(context, TrackingService.FINISH, false)
+    fun continueOutside(context: Context) = command(context, TrackingService.OUTSIDE_OK, false)
 
     private fun command(context: Context, action: String, foreground: Boolean, at: Long = System.currentTimeMillis(), anchor: MapCoordinate? = null) {
         if (foreground && (!hasLocationPermission(context) || !hasNotificationPermission(context))) {
@@ -164,6 +167,7 @@ class TrackingService : Service(), LocationListener {
                         if (!TrackingController.hasLocationPermission(this@TrackingService)) pauseForProblem("Permiso de ubicación revocado. Jornada pausada.", "PERMISSION_REVOKED")
                         else if (!TrackingController.hasNotificationPermission(this@TrackingService)) pauseForProblem("Notificaciones desactivadas. Jornada pausada para mantener el seguimiento visible.", "NOTIFICATION_DISABLED")
                         else if (!manager.isProviderEnabled(LocationManager.GPS_PROVIDER)) pauseForProblem("Ubicación desactivada en Android. Jornada pausada.", "GPS_DISABLED")
+                        else if (idle.shouldPause(System.currentTimeMillis())) pauseIdle()
                         else try {
                             repository.currentJourney()?.let { repository.heartbeat(it.id) }
                             if (android.os.SystemClock.elapsedRealtime() - lastFixElapsed > WalkingGpsFilter.SIGNAL_GAP_MS) TrackingRuntime.mutable.update { it.copy(message = "Sin ubicación precisa reciente · esperando señal GPS") }
@@ -195,6 +199,10 @@ class TrackingService : Service(), LocationListener {
                 stopSelf(startId)
                 return START_NOT_STICKY
             }
+        } else if (action == OUTSIDE_OK) {
+            scope.launch { serial.withLock { runCatching { zoneAlerts.acceptOutside() } } }
+            if (!foreground) stopSelf(startId)
+            return START_NOT_STICKY
         } else if (action == ASK_FINISH) {
             // Lock-screen finish needs a second tap; a pocket tap must never close the day.
             getSystemService(NotificationManager::class.java).notify(if (foreground) NOTIFICATION_ID else PAUSED_ID, notification(confirm = true, paused = !foreground))
@@ -239,6 +247,7 @@ class TrackingService : Service(), LocationListener {
                             if (requestedGeneration == commandGeneration) startListening()
                         }
                         PAUSE -> {
+                            TrackingRuntime.mutable.update { it.copy(outsideZone = null) }
                             repository.currentJourney()?.let { repository.pauseJourney(it.id, requestedAt,eventPosition)
                                 getSystemService(NotificationManager::class.java).notify(PAUSED_ID, notification(paused = true)) }
                             (application as? com.rutacomercial.app.RutaApplication)?.cloud?.scheduleDelivery()
@@ -246,6 +255,7 @@ class TrackingService : Service(), LocationListener {
                             if (requestedGeneration == commandGeneration) finishService()
                         }
                         FINISH -> {
+                            TrackingRuntime.mutable.update { it.copy(outsideZone = null) }
                             getSystemService(NotificationManager::class.java).cancel(PAUSED_ID)
                             repository.currentJourney()?.let { repository.finishJourney(it.id, requestedAt,eventPosition) }
                             (application as? com.rutacomercial.app.RutaApplication)?.cloud?.scheduleDelivery()
@@ -270,6 +280,7 @@ class TrackingService : Service(), LocationListener {
         walkingFilter.reset()
         generation++
         lastFixElapsed = android.os.SystemClock.elapsedRealtime()
+        idle.start(System.currentTimeMillis())
         requestedAfterNanos = android.os.SystemClock.elapsedRealtimeNanos()
         TrackingRuntime.mutable.update { it.copy(isTracking = true, isLocating = false, locationProblem = null, provider = "", message = "Comprobando ubicación · esperá unos segundos") }
         val token = generation
@@ -285,6 +296,23 @@ class TrackingService : Service(), LocationListener {
         if (::locationSource.isInitialized) locationSource.stop()
         if (::manager.isInitialized) runCatching { manager.removeUpdates(this) }
         TrackingRuntime.mutable.update { it.copy(isTracking = false) }
+    }
+
+    private val idle = IdleWatch()
+
+    private suspend fun pauseIdle() {
+        stopListening()
+        val message = "Pausamos tu recorrido: 20 minutos sin moverte. Ese tiempo no se cuenta. Tocá Reanudar para seguir."
+        runCatching {
+            repository.currentJourney()?.let {
+                repository.pauseIdle(it.id, idle.lastMovedAt)
+                repository.addIncident(message, it.id, "IDLE_PAUSE")
+            }
+        }
+        TrackingRuntime.mutable.update { it.copy(message = message, outsideZone = null) }
+        getSystemService(NotificationManager::class.java).notify(PAUSED_ID, notification(paused = true))
+        (application as? com.rutacomercial.app.RutaApplication)?.cloud?.scheduleDelivery()
+        finishService()
     }
 
     private suspend fun pauseForProblem(message: String, kind: String) {
@@ -345,6 +373,7 @@ class TrackingService : Service(), LocationListener {
                     }
                     val result = repository.recordLocation(fix, signalContinuous = !filtered.breakSegment)
                     if (result.accepted) {
+                        idle.moved(fix.latitude, fix.longitude, fix.at)
                         runCatching { zoneAlerts.check(fix.latitude, fix.longitude, System.currentTimeMillis()) }
                         lastFixElapsed = android.os.SystemClock.elapsedRealtime()
                         TrackingRuntime.mutable.update { it.copy(position = MapCoordinate(fix.latitude, fix.longitude), accuracyMeters = fix.accuracyMeters,
@@ -403,6 +432,7 @@ class TrackingService : Service(), LocationListener {
         const val RESUME = "com.rutacomercial.RESUME"
         const val FINISH = "com.rutacomercial.FINISH"
         const val ASK_FINISH = "com.rutacomercial.ASK_FINISH"
+        const val OUTSIDE_OK = "com.rutacomercial.OUTSIDE_OK"
         const val KEEP = "com.rutacomercial.KEEP"
         private const val PAUSED_ID = 2402
         internal const val CHANNEL = "journey_tracking_v2"

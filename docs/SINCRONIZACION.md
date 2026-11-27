@@ -61,3 +61,9 @@ Al asignar en línea, el Owner descarga las calles de la zona y las sube junto a
 ## Resumen del día
 
 El Owner recibe un aviso alrededor de las 20 h con km, horas y zonas por repartidor. En **Hoy**, **Compartir** manda ese resumen por WhatsApp.
+
+## Tarifa por hora
+
+En **Asignaciones**, el Owner escribe una vez el **valor de la hora**. Cada tarea guarda el valor vigente al asignarla (también al aceptar una propuesta o reasignar), así que cambiarlo después no altera tareas anteriores; dentro de la tarea se puede cambiar.
+
+El pago usa solo el **tiempo activo**, sin pausas, sumando todas las jornadas de la tarea: "0 h 12 min activos × $ 4.000 por hora = $ 851". Mientras la tarea no terminó dice "a la fecha". Cada tarea tiene **Pagado / Pendiente de pago** con la fecha, y Asignaciones muestra **Por pagar** con el total por repartidor y "Marcar todo como pagado". Los valores y marcas viajan en el respaldo cifrado. Solo los ve el Owner.
