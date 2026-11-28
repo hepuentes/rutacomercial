@@ -166,11 +166,12 @@ internal fun MapScreen(vm: RutaViewModel, data: DataSnapshot, tracking: Tracking
                 onGuideActive={guiding=it;if(it && !com.rutacomercial.app.tracking.TrackingController.hasLocationPermission(context)) onLocate()},onDrawHere={p->nav.close();point=p;createZone();sharedPin=p},
                 currentLocation = tracking.position, accuracyMeters = tracking.accuracyMeters, locationFresh = freshLocation,
                 selectionColor = newZoneColor, deliveryPoints = deliveries, draftPolygon = if (editing) emptyList() else point?.let { listOf(it) }.orEmpty(),
-                fitArea=if(allZones) sectors.flatMap { it.points } else if(editing && draftId==sectorId) polygon+outlineFit+reports.flatMap { r->r.lines.flatMap { it.points } } else emptyList(),
+                fitArea=if(allZones) zoneCluster(sectors) else if(editing && draftId==sectorId) polygon+outlineFit+reports.flatMap { r->r.lines.flatMap { it.points } } else emptyList(),
                 center = cameraCenter.takeUnless { allZones || editing && draftId==sectorId }, centerRequest = centerRequest, selectingZone = editing, freehand = freehand, moveWhileDrawing = movingDraft, fieldTools = selectedJourneyId == null,
                 followingLocation = followLocation && (tracking.isTracking || freshLocation),
                 onRecenter = {
                     allZones=false;point=null;waitingLocation=true;followLocation=true;userMovedMap=false
+                    tracking.position?.let { cameraCenter = it; centerRequest++ }
                     onLocate()
                 },
                 onSelectionChanged = { draft = it }, onCameraIdle = { viewportCenter = it },
@@ -187,7 +188,7 @@ internal fun MapScreen(vm: RutaViewModel, data: DataSnapshot, tracking: Tracking
             }
             if (selectedJourneyId == null && editing && !freehand) FilledTonalButton(onClick = {
                 editing = false; point = null; waitingLocation = true; followLocation = true; userMovedMap = false
-                tracking.position?.takeIf { tracking.fixAt != null && System.currentTimeMillis()-tracking.fixAt in 0..30_000 }?.let { cameraCenter = it }
+                tracking.position?.let { cameraCenter = it }
                 centerRequest++; onLocate()
             }, modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 58.dp)) { Text(if (tracking.isLocating) "Buscando ubicación…" else if (followLocation && tracking.isTracking) "Siguiendo ubicación" else "Mi ubicación") }
         }
@@ -394,4 +395,14 @@ internal fun MapScreen(vm: RutaViewModel, data: DataSnapshot, tracking: Tracking
 private fun JourneyMeter(vm: RutaViewModel, journey: Journey) {
     val now by vm.now.collectAsStateWithLifecycle()
     Text("${number(journey.distanceM / 1000, 2)} km · ${hours(journey.activeDuration(now))}${if(journey.state == "PAUSED") " · En pausa" else ""}", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelLarge)
+}
+
+/** Points of the zones around the median zone. A zone drawn far away (another city, a bad GPS point)
+ *  must not zoom "Todas las zonas" out to a continent; it is still listed and drawn. */
+internal fun zoneCluster(sectors: List<MapSector>, radiusM: Double = 100_000.0): List<MapCoordinate> {
+    val centers = sectors.filter { it.points.isNotEmpty() }.map { s -> s to MapCoordinate(s.points.map { it.latitude }.average(), s.points.map { it.longitude }.average()) }
+    if (centers.isEmpty()) return emptyList()
+    val lat = centers.map { it.second.latitude }.sorted()[centers.size / 2]
+    val lon = centers.map { it.second.longitude }.sorted()[centers.size / 2]
+    return centers.filter { Geo.distanceM(lat, lon, it.second.latitude, it.second.longitude) <= radiusM }.flatMap { it.first.points }
 }

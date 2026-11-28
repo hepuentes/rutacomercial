@@ -284,7 +284,8 @@ internal fun TerritoryMap(
         val ready = map
         if (ready != null && center != null) {
             val target = LatLng(center.latitude, center.longitude)
-            val update = if (appliedCenterRequest != centerRequest && !keepZoom) CameraUpdateFactory.newLatLngZoom(target, 16.0) else CameraUpdateFactory.newLatLng(target)
+            val update = if (appliedCenterRequest != centerRequest) CameraUpdateFactory.newLatLngZoom(target, if (keepZoom) maxOf(ready.cameraPosition.zoom, 16.0) else 16.0)
+                else CameraUpdateFactory.newLatLng(target)
             appliedCenterRequest = centerRequest
             keepZoom=false
             if (followBearing || compactNavigation) ready.moveCamera(update) else ready.animateCamera(update, 600)
