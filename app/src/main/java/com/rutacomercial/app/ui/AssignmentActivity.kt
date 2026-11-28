@@ -620,7 +620,7 @@ class AssignmentActivity : TrackingMapActivity() {
                     marks=if(worker) previousPins+marks else previousMarks(zone)+taskReports.flatMap { it.marks },onMapGesture={userCamera=true;locateRequested=false;following=false},fieldTools=worker,
                     onGuideActive={guiding=it},navigation=nav.takeIf { worker },onDrawHere={p->nav.close();proposeAt(p)},onNavigateLocate={action("locate")},
                     previewGuide=worker && journey==null,onGuidePreview={showingPreview=it},
-                    followingLocation=following && fresh,onRecenter=if(worker) ({ userCamera=true;following=true;locateRequested=true;action("locate") }) else null,center=target,centerRequest=cameraRequest,fitArea=if(target==null) polygon+listOfNotNull(overview,firstLive) else emptyList(),
+                    followingLocation=following && fresh,onRecenter=if(worker) ({ userCamera=true;following=true;locateRequested=true;displayed?.let { target=it;cameraRequest++ };action("locate") }) else null,center=target,centerRequest=cameraRequest,fitArea=if(target==null) polygon+listOfNotNull(overview,firstLive) else emptyList(),
                     currentLocation=if(worker) displayed else null,locationFresh=fresh,accuracyMeters=tracking.accuracyMeters,
                     businesses=boundaryPoint?.let { listOf(MapBusiness("arrival","Punto de llegada sugerido",it.latitude,it.longitude,"#BA5018")) }.orEmpty()+listOfNotNull(livePin))
                 if(!worker) Column(Modifier.align(Alignment.TopStart).padding(8.dp)) {

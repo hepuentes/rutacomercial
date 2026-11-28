@@ -128,6 +128,13 @@ private fun rememberSaveableState(initial: String) = androidx.compose.runtime.sa
 @Composable
 private fun MoreScreen(onNavigate: (String) -> Unit) = ScreenColumn {
     PageHeading("Tu operación", "Organizá el territorio, el material y las próximas visitas.")
+    val context = LocalContext.current
+    if (!com.rutacomercial.app.BuildConfig.WORKER_EDITION) OutlinedCard(onClick = { context.startActivity(Intent(context, AssignmentActivity::class.java)) }, modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Asignaciones y repartidores", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium)
+            Text("Vincular repartidores, asignar zonas, pagos y campañas", style = MaterialTheme.typography.bodyMedium)
+        }
+    }
     listOf("Sectores" to "Ciudades, barrios y polígonos de trabajo", "Campañas" to "Material disponible, asignado y entregado",
         "Recorrido planificado" to "Ordená manualmente tus próximas paradas", "Historial" to "Jornadas, incidencias e informes",
         "Mapas sin conexión" to "Regiones descargadas para salir a caminar", "Configuración" to "Permisos, privacidad y respaldos").forEach { (title, subtitle) ->
